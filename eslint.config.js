@@ -27,6 +27,17 @@ module.exports = tseslint.config(
     },
   },
   {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        clearTimeout: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+        setTimeout: 'readonly',
+      },
+    },
+  },
+  {
     ignores: ['code.js', 'dist', 'eslint.config.js'],
   },
 )

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
+import type { HealthResponse } from "../shared/health";
 import type {
   NodeSnapshot,
   PluginMessage,
@@ -7,6 +8,7 @@ import type {
   SelectionSummary,
   UIMessage,
 } from "../shared/messages";
+import { getHealth } from "./api";
 
 const NODE_PREVIEW_LIMIT = 20;
 
@@ -46,6 +48,8 @@ export function App() {
   const [status, setStatus] = useState("正在连接 Figma 主线程...");
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [nodeQuery, setNodeQuery] = useState("");
+  const [proxyHealth, setProxyHealth] = useState<HealthResponse | null>(null);
+  const [proxyError, setProxyError] = useState(false);
 
   const normalizedQuery = nodeQuery.trim().toLocaleLowerCase();
   const matchingNodes = scanResult
@@ -59,6 +63,18 @@ export function App() {
       })
     : [];
   const previewNodes = matchingNodes.slice(0, NODE_PREVIEW_LIMIT);
+
+  useEffect(() => {
+    getHealth()
+      .then((health) => {
+        setProxyHealth(health);
+        setProxyError(false);
+      })
+      .catch(() => {
+        setProxyHealth(null);
+        setProxyError(true);
+      });
+  }, []);
 
   useEffect(() => {
     const receive = (event: MessageEvent<{ pluginMessage?: UIMessage }>) => {
@@ -104,6 +120,29 @@ export function App() {
         <h1>多视角 UI 评估</h1>
         <p class="subtitle">第一阶段：Figma 节点树读取</p>
       </header>
+
+      <section
+        class={`proxy-card ${proxyHealth ? "is-online" : proxyError ? "is-offline" : "is-checking"}`}
+        aria-label="百炼代理状态"
+      >
+        <i aria-hidden="true" />
+        <div>
+          <strong>
+            {proxyHealth
+              ? "本地代理已连接"
+              : proxyError
+                ? "本地代理未连接"
+                : "正在检查本地代理"}
+          </strong>
+          <p>
+            {proxyHealth
+              ? `${proxyHealth.provider} · ${proxyHealth.model} · ${proxyHealth.mockMode ? "Mock 模式" : "真实模式"} · Key ${proxyHealth.apiKeyConfigured ? "已配置" : "未配置"}`
+              : proxyError
+                ? "请确认 npm run dev 正在运行。"
+                : "正在请求 http://localhost:8787/health"}
+          </p>
+        </div>
+      </section>
 
       <section class="selection-card" aria-label="当前选择">
         <span>当前选择</span>

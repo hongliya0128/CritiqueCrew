@@ -5,8 +5,12 @@
   "main": "dist/code.js",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "dev": "node scripts/build.mjs --watch",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.ui.json",
+    "dev": "concurrently -k -n PLUGIN,SERVER -c magenta,cyan \"npm:dev:plugin\" \"npm:dev:server\"",
+    "dev:plugin": "node scripts/build.mjs --watch",
+    "dev:server": "tsx watch server/index.ts",
+    "server": "tsx server/index.ts",
+    "test:model": "tsx scripts/test-model.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.ui.json && tsc --noEmit -p tsconfig.server.json",
     "test": "vitest run",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
@@ -17,15 +21,25 @@
     "@eslint/js": "^9.39.4",
     "@figma/eslint-plugin-figma-plugins": "*",
     "@figma/plugin-typings": "*",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
+    "@types/supertest": "^7.2.1",
+    "concurrently": "^10.0.4",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.4",
     "jsdom": "^29.1.1",
+    "supertest": "^7.2.2",
+    "tsx": "^4.23.1",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.57.1",
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "preact": "^10.29.7"
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "preact": "^10.29.7",
+    "zod": "^4.4.3"
   }
 }
