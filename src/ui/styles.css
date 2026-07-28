@@ -13,6 +13,12 @@ input { font: inherit; }
 .eyebrow { margin: 0 0 6px; color: #7157ff; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
 h1 { margin: 0; font-size: 22px; }
 .subtitle { margin: 8px 0 22px; color: #69707d; font-size: 13px; }
+.proxy-card { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; padding: 12px 14px; border: 1px solid #e2e4eb; border-radius: 12px; background: #fff; }
+.proxy-card > i { width: 9px; height: 9px; flex: none; margin-top: 3px; border-radius: 50%; background: #a5a9b2; box-shadow: 0 0 0 3px rgba(165, 169, 178, .13); }
+.proxy-card.is-online > i { background: #20a464; box-shadow: 0 0 0 3px rgba(32, 164, 100, .13); }
+.proxy-card.is-offline > i { background: #d84b4b; box-shadow: 0 0 0 3px rgba(216, 75, 75, .13); }
+.proxy-card strong { display: block; font-size: 12px; }
+.proxy-card p { margin: 4px 0 0; color: #69707d; font-size: 10px; line-height: 1.45; }
 .selection-card, .status-card, .scan-card { margin-bottom: 12px; padding: 14px; border: 1px solid #e2e4eb; border-radius: 12px; background: #fff; }
 .selection-card span, .status-card span, .scan-card span { color: #69707d; font-size: 12px; }
 .selection-card strong { display: block; margin-top: 4px; font-size: 20px; }
