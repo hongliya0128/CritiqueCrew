@@ -1,13 +1,15 @@
 {
   "name": "CritiqueCrew",
   "version": "1.0.0",
-  "description": "Your Figma Plugin",
-  "main": "code.js",
+  "description": "A Figma plugin for multi-perspective UI evaluation.",
+  "main": "dist/code.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.ui.json",
+    "test": "vitest run",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "watch": "npm run build -- --watch"
+    "lint:fix": "eslint . --fix"
   },
   "author": "",
   "license": "",
@@ -15,8 +17,15 @@
     "@eslint/js": "^9.39.4",
     "@figma/eslint-plugin-figma-plugins": "*",
     "@figma/plugin-typings": "*",
+    "@types/node": "^26.1.2",
+    "esbuild": "^0.28.1",
     "eslint": "^9.39.4",
+    "jsdom": "^29.1.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.57.1"
+    "typescript-eslint": "^8.57.1",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "preact": "^10.29.7"
   }
 }
