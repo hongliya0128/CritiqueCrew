@@ -66,7 +66,7 @@ h1 { margin: 0; font-size: 22px; }
 .rule-issue-list { display: grid; gap: 8px; max-height: 360px; padding: 10px; overflow-y: auto; }
 .rule-issue { padding: 11px; border: 1px solid #f1d8d8; border-radius: 9px; background: #fffafa; }
 .rule-issue-title { display: flex; align-items: flex-start; gap: 7px; }
-.rule-issue-title strong { color: #38343a; font-size: 12px; line-height: 1.45; }
+.rule-issue-title strong { color: #38343a; font-size: 12px; line-height: 1.45; white-space: nowrap; }
 .severity { flex: none; padding: 2px 5px; border-radius: 4px; font-size: 9px; font-weight: 700; }
 .severity-error { color: #b52e35; background: #ffe6e7; }
 .severity-warning { color: #96620a; background: #fff0c7; }

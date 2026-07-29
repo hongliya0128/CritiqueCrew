@@ -292,7 +292,7 @@ export function App() {
                   <span>自动化规则检测</span>
                   <strong>{ruleCheck.issues.length} 项待修复</strong>
                 </div>
-                <small>已按 WCAG AA、分级字号、44px 自动检查</small>
+                <small>已按WCAG AA、分级字号、44px自动检查</small>
               </div>
 
               {ruleCheck.issues.length > 0 ? (

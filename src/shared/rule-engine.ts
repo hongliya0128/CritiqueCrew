@@ -193,7 +193,7 @@ export function checkRules(nodes: readonly NodeSnapshot[]): RuleCheckResult {
               createIssue(
                 "color-contrast",
                 node,
-                "文本与背景的颜色对比度未达到 WCAG AA 标准",
+                "文本颜色对比度未达到WCAG AA标准",
                 `${ratio.toFixed(2)}:1`,
                 `不低于 ${WCAG_AA_CONTRAST_RATIO}:1`,
               ),
