@@ -10,6 +10,13 @@ module.exports = tseslint.config(
   // tseslint.configs.recommended instead.
   tseslint.configs.recommended,
   {
+    files: ['src/main/**/*.ts'],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.json'],
+        tsconfigRootDir: __dirname,
+      },
+    },
     plugins: {
       '@figma/figma-plugins': figmaPlugin,
     },

@@ -13,6 +13,8 @@ export type SolidColorSnapshot = {
   a: number;
 };
 
+export type FillKind = "none" | "solid" | "complex";
+
 export type NodeSnapshot = {
   id: string;
   parentId: string | null;
@@ -31,6 +33,8 @@ export type NodeSnapshot = {
   rotation: number;
   opacity: number;
   fills: SolidColorSnapshot[];
+  fillKind: FillKind;
+  hasPointerInteraction: boolean;
   fontSize: number | "mixed" | null;
   characters: string | null;
   cornerRadius: number | "mixed" | null;
@@ -47,12 +51,35 @@ export type ScanResult = {
   scannedAt: string;
 };
 
+export type RuleId = "color-contrast" | "font-size" | "target-size";
+
+export type RuleSeverity = "error" | "warning";
+
+export type RuleIssue = {
+  id: string;
+  ruleId: RuleId;
+  severity: RuleSeverity;
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  message: string;
+  actual: string;
+  expected: string;
+};
+
+export type RuleCheckResult = {
+  issues: RuleIssue[];
+  skippedContrastNodes: number;
+};
+
 export type PluginMessage =
   | { type: "UI_READY" }
   | { type: "SCAN_REQUEST"; scope: ScanScope }
+  | { type: "REPAIR_PROTOTYPE_HIERARCHY" }
   | { type: "CLOSE_PLUGIN" };
 
 export type UIMessage =
   | { type: "SELECTION_CHANGED"; selection: SelectionSummary }
   | { type: "SCAN_RESULT"; result: ScanResult }
+  | { type: "HIERARCHY_REPAIRED"; movedCount: number }
   | { type: "PLUGIN_ERROR"; message: string };

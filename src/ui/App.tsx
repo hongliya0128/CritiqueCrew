@@ -8,6 +8,7 @@ import type {
   SelectionSummary,
   UIMessage,
 } from "../shared/messages";
+import { checkRules } from "../shared/rule-engine";
 import { getHealth } from "./api";
 
 const NODE_PREVIEW_LIMIT = 20;
@@ -47,6 +48,7 @@ export function App() {
   const [selection, setSelection] = useState(emptySelection);
   const [status, setStatus] = useState("正在连接 Figma 主线程...");
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [ruleCheck, setRuleCheck] = useState<ReturnType<typeof checkRules> | null>(null);
   const [nodeQuery, setNodeQuery] = useState("");
   const [proxyHealth, setProxyHealth] = useState<HealthResponse | null>(null);
   const [proxyError, setProxyError] = useState(false);
@@ -88,6 +90,7 @@ export function App() {
 
       if (message.type === "SCAN_RESULT") {
         setScanResult(message.result);
+        setRuleCheck(checkRules(message.result.nodes));
         setNodeQuery("");
         setStatus(
           message.result.truncated
@@ -99,6 +102,15 @@ export function App() {
       if (message.type === "PLUGIN_ERROR") {
         setStatus(message.message);
       }
+
+      if (message.type === "HIERARCHY_REPAIRED") {
+        setStatus(
+          message.movedCount > 0
+            ? `已完成两页层级整理，共归入 ${message.movedCount} 个节点。`
+            : "两页原型当前已是目标层级。",
+        );
+      }
+
     };
 
     window.addEventListener("message", receive);
@@ -109,6 +121,7 @@ export function App() {
   function requestScan(scope: ScanScope): void {
     setStatus("正在读取节点树...");
     setScanResult(null);
+    setRuleCheck(null);
     setNodeQuery("");
     send({ type: "SCAN_REQUEST", scope });
   }
@@ -271,10 +284,70 @@ export function App() {
               </div>
             </div>
           </details>
+
+          {ruleCheck && (
+            <section class="rule-results" aria-label="自动化规则检测结果">
+              <div class="rule-results-header">
+                <div>
+                  <span>自动化规则检测</span>
+                  <strong>{ruleCheck.issues.length} 项待修复</strong>
+                </div>
+                <small>已按WCAG AA、分级字号、44px自动检查</small>
+              </div>
+
+              {ruleCheck.issues.length > 0 ? (
+                <div class="rule-issue-list">
+                  {ruleCheck.issues.map((issue) => (
+                    <article class="rule-issue" key={issue.id}>
+                      <div class="rule-issue-title">
+                        <span class={`severity severity-${issue.severity}`}>
+                          {issue.severity === "warning" ? "建议优化" : "需修复"}
+                        </span>
+                        <strong>{issue.message}</strong>
+                      </div>
+                      <dl>
+                        <div>
+                          <dt>节点</dt>
+                          <dd title={issue.nodeName}>{issue.nodeName}</dd>
+                        </div>
+                        <div>
+                          <dt>节点 ID</dt>
+                          <dd><code title={issue.nodeId}>{issue.nodeId}</code></dd>
+                        </div>
+                        <div>
+                          <dt>检测值</dt>
+                          <dd>{issue.actual}</dd>
+                        </div>
+                        <div>
+                          <dt>要求</dt>
+                          <dd>{issue.expected}</dd>
+                        </div>
+                      </dl>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p class="rule-success">当前扫描范围内未发现规则违规项。</p>
+              )}
+
+              {ruleCheck.skippedContrastNodes > 0 && (
+                <p class="rule-note">
+                  {ruleCheck.skippedContrastNodes} 个文本节点缺少可确定的纯色背景，暂未计算其对比度。
+                </p>
+              )}
+            </section>
+          )}
         </>
       )}
 
       <div class="actions scan-actions">
+        <button
+          class="secondary hierarchy-button"
+          type="button"
+          onClick={() => send({ type: "REPAIR_PROTOTYPE_HIERARCHY" })}
+        >
+          整理测试页层级
+        </button>
         <button
           class="primary"
           type="button"

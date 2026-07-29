@@ -5,8 +5,15 @@ import type {
   SolidColorSnapshot,
 } from "../shared/messages";
 
-export const MAX_VISIBLE_NODES = 600;
+export const MAX_VISIBLE_NODES = 1000;
 export const MAX_TEXT_LENGTH = 300;
+
+const pointerTriggerTypes = new Set([
+  "ON_CLICK",
+  "ON_PRESS",
+  "MOUSE_UP",
+  "MOUSE_DOWN",
+]);
 
 const selectableRootTypes = new Set<SceneNode["type"]>([
   "FRAME",
@@ -29,17 +36,44 @@ function mixedNumber(value: unknown): number | "mixed" | null {
   return null;
 }
 
-function solidFills(node: SceneNode): SolidColorSnapshot[] {
-  if (!("fills" in node) || !Array.isArray(node.fills)) return [];
+function minimumTextFontSize(node: TextNode): number | "mixed" | null {
+  if (typeof node.fontSize === "number") return rounded(node.fontSize);
 
-  return node.fills
-    .filter((paint): paint is SolidPaint => paint.type === "SOLID" && paint.visible !== false)
+  const sizes = node
+    .getStyledTextSegments(["fontSize"])
+    .map((segment) => segment.fontSize)
+    .filter((size): size is number => typeof size === "number");
+
+  return sizes.length > 0 ? rounded(Math.min(...sizes)) : "mixed";
+}
+
+function visiblePaints(node: SceneNode): readonly Paint[] {
+  if (!("fills" in node) || !Array.isArray(node.fills)) return [];
+  return node.fills.filter((paint) => paint.visible !== false);
+}
+
+function solidFills(node: SceneNode): SolidColorSnapshot[] {
+  return visiblePaints(node)
+    .filter((paint): paint is SolidPaint => paint.type === "SOLID")
     .map((paint) => ({
       r: rounded(paint.color.r),
       g: rounded(paint.color.g),
       b: rounded(paint.color.b),
       a: rounded(paint.opacity ?? 1),
     }));
+}
+
+function fillKind(node: SceneNode): NodeSnapshot["fillKind"] {
+  const paints = visiblePaints(node);
+  if (paints.length === 0) return "none";
+  return paints.length === 1 && paints[0].type === "SOLID" ? "solid" : "complex";
+}
+
+function hasPointerInteraction(node: SceneNode): boolean {
+  if (!("reactions" in node) || !Array.isArray(node.reactions)) return false;
+  return node.reactions.some(
+    (reaction) => reaction.trigger !== null && pointerTriggerTypes.has(reaction.trigger.type),
+  );
 }
 
 function visibleChildren(node: SceneNode): readonly SceneNode[] {
@@ -70,7 +104,9 @@ function snapshotNode(node: SceneNode, parentId: string | null, depth: number): 
     rotation: "rotation" in node ? rounded(node.rotation) : 0,
     opacity: "opacity" in node ? rounded(node.opacity) : 1,
     fills: solidFills(node),
-    fontSize: isText ? mixedNumber(node.fontSize) : null,
+    fillKind: fillKind(node),
+    hasPointerInteraction: hasPointerInteraction(node),
+    fontSize: isText ? minimumTextFontSize(node) : null,
     characters: isText ? node.characters.slice(0, MAX_TEXT_LENGTH) : null,
     cornerRadius: "cornerRadius" in node ? mixedNumber(node.cornerRadius) : null,
   };
