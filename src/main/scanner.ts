@@ -78,7 +78,12 @@ function hasPointerInteraction(node: SceneNode): boolean {
 
 function visibleChildren(node: SceneNode): readonly SceneNode[] {
   if (!("children" in node)) return [];
-  return node.children.filter((child) => child.visible !== false);
+  return node.children.filter((child) => child.visible !== false && !isCritiqueCrewAnnotation(child));
+}
+
+function isCritiqueCrewAnnotation(node: SceneNode): boolean {
+  const getPluginData = (node as unknown as { getPluginData?: (key: string) => string }).getPluginData;
+  return typeof getPluginData === "function" && getPluginData.call(node, "critiquecrew-annotation-root") === "true";
 }
 
 function snapshotNode(node: SceneNode, parentId: string | null, depth: number): NodeSnapshot {
@@ -120,7 +125,7 @@ export function scanNodeTree(
   let truncated = false;
 
   function visit(node: SceneNode, parentId: string | null, depth: number): void {
-    if (node.visible === false) return;
+    if (node.visible === false || isCritiqueCrewAnnotation(node)) return;
     if (nodes.length >= limit) {
       truncated = true;
       return;

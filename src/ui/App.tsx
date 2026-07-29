@@ -1,8 +1,9 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { HealthResponse } from "../shared/health";
 import type {
   NodeSnapshot,
   PluginMessage,
+  RuleId,
   ScanResult,
   ScanScope,
   SelectionSummary,
@@ -16,6 +17,7 @@ const NODE_PREVIEW_LIMIT = 20;
 const emptySelection: SelectionSummary = {
   count: 0,
   names: [],
+  selectedNodeId: null,
   canScanSelection: false,
 };
 
@@ -44,14 +46,31 @@ function optionalNumber(value: number | "mixed" | null, suffix = ""): string {
   return value === null ? "—" : `${value}${suffix}`;
 }
 
+const ruleScoreLabels = {
+  "color-contrast": "颜色对比度",
+  "font-size": "字号大小",
+  "target-size": "点击区域",
+} as const;
+
+const ruleFilters: { id: RuleId | "all"; label: string }[] = [
+  { id: "all", label: "全部" },
+  { id: "color-contrast", label: "对比度" },
+  { id: "font-size", label: "字号" },
+  { id: "target-size", label: "点击区域" },
+];
+
 export function App() {
   const [selection, setSelection] = useState(emptySelection);
   const [status, setStatus] = useState("正在连接 Figma 主线程...");
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [ruleCheck, setRuleCheck] = useState<ReturnType<typeof checkRules> | null>(null);
+  const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
+  const [canvasSelectedNodeId, setCanvasSelectedNodeId] = useState<string | null>(null);
+  const [ruleFilter, setRuleFilter] = useState<RuleId | "all">("all");
   const [nodeQuery, setNodeQuery] = useState("");
   const [proxyHealth, setProxyHealth] = useState<HealthResponse | null>(null);
   const [proxyError, setProxyError] = useState(false);
+  const issueCardRefs = useRef(new Map<string, HTMLElement>());
 
   const normalizedQuery = nodeQuery.trim().toLocaleLowerCase();
   const matchingNodes = scanResult
@@ -65,6 +84,9 @@ export function App() {
       })
     : [];
   const previewNodes = matchingNodes.slice(0, NODE_PREVIEW_LIMIT);
+  const visibleIssues = ruleCheck
+    ? ruleCheck.issues.filter((issue) => ruleFilter === "all" || issue.ruleId === ruleFilter)
+    : [];
 
   useEffect(() => {
     getHealth()
@@ -85,12 +107,15 @@ export function App() {
 
       if (message.type === "SELECTION_CHANGED") {
         setSelection(message.selection);
+        setCanvasSelectedNodeId(message.selection.selectedNodeId);
         setStatus("已同步当前选中状态。");
       }
 
       if (message.type === "SCAN_RESULT") {
         setScanResult(message.result);
         setRuleCheck(checkRules(message.result.nodes));
+        setActiveIssueId(null);
+        setRuleFilter("all");
         setNodeQuery("");
         setStatus(
           message.result.truncated
@@ -99,7 +124,28 @@ export function App() {
         );
       }
 
+      if (message.type === "NODE_LOCATED") {
+        setStatus(`已定位到画布节点：${message.nodeName}。`);
+      }
+
+      if (message.type === "NODE_FOCUS_CLEARED") {
+        setStatus("已取消节点定位。");
+      }
+
+      if (message.type === "ANNOTATIONS_CREATED") {
+        setStatus(
+          message.count > 0
+            ? `已在画布中创建 ${message.count} 个规则问题标注。`
+            : "未找到可标注的规则问题节点。",
+        );
+      }
+
+      if (message.type === "ANNOTATIONS_CLEARED") {
+        setStatus(message.count > 0 ? `已清除 ${message.count} 组画布标注。` : "当前没有可清除的画布标注。");
+      }
+
       if (message.type === "PLUGIN_ERROR") {
+        setActiveIssueId(null);
         setStatus(message.message);
       }
 
@@ -118,12 +164,55 @@ export function App() {
     return () => window.removeEventListener("message", receive);
   }, []);
 
+  useEffect(() => {
+    if (!canvasSelectedNodeId || !ruleCheck || !scanResult) {
+      if (!canvasSelectedNodeId) setActiveIssueId(null);
+      return;
+    }
+
+    const issue = ruleCheck.issues.find((item) => item.nodeId === canvasSelectedNodeId);
+
+    if (!issue) {
+      setActiveIssueId(null);
+      return;
+    }
+
+    setActiveIssueId(issue.id);
+    const timer = window.setTimeout(() => {
+      issueCardRefs.current.get(issue.id)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [canvasSelectedNodeId, ruleCheck, scanResult]);
+
   function requestScan(scope: ScanScope): void {
     setStatus("正在读取节点树...");
     setScanResult(null);
     setRuleCheck(null);
     setNodeQuery("");
     send({ type: "SCAN_REQUEST", scope });
+  }
+
+  function requestLocate(nodeId: string, nodeName: string): void {
+    setStatus(`正在定位节点：${nodeName}...`);
+    send({ type: "LOCATE_NODE", nodeId });
+  }
+
+  function toggleIssueFocus(issueId: string, nodeId: string, nodeName: string): void {
+    if (activeIssueId === issueId) {
+      setActiveIssueId(null);
+      setStatus("正在取消节点定位...");
+      send({ type: "CLEAR_NODE_FOCUS" });
+      return;
+    }
+
+    setActiveIssueId(issueId);
+    requestLocate(nodeId, nodeName);
+  }
+
+  function createAnnotations(): void {
+    if (visibleIssues.length === 0) return;
+    setStatus("正在创建画布标注...");
+    send({ type: "CREATE_ANNOTATIONS", issues: visibleIssues });
   }
 
   return (
@@ -193,7 +282,11 @@ export function App() {
           <details class="node-preview">
             <summary>
               <span>节点数据预览</span>
-              <small>{matchingNodes.length} 条</small>
+              <small>
+                {matchingNodes.length > NODE_PREVIEW_LIMIT
+                  ? `前 ${NODE_PREVIEW_LIMIT} 条`
+                  : `${matchingNodes.length} 条`}
+              </small>
             </summary>
             <div class="node-preview-body">
               <label class="node-search">
@@ -286,19 +379,89 @@ export function App() {
           </details>
 
           {ruleCheck && (
-            <section class="rule-results" aria-label="自动化规则检测结果">
-              <div class="rule-results-header">
+            <details class="rule-results" aria-label="自动化规则检测结果">
+              <summary class="rule-results-summary">
                 <div>
                   <span>自动化规则检测</span>
                   <strong>{ruleCheck.issues.length} 项待修复</strong>
                 </div>
                 <small>已按WCAG AA、分级字号、44px自动检查</small>
-              </div>
+              </summary>
 
-              {ruleCheck.issues.length > 0 ? (
+              <div class="rule-results-content">
+
+              <section class="rule-score" aria-label="规则评分">
+                <div class="rule-score-overview">
+                  <span>规则评分</span>
+                  <strong>{ruleCheck.score === null ? "—" : `${ruleCheck.score} 分`}</strong>
+                  <small>后续综合评分占 30%</small>
+                </div>
+                <div class="rule-score-items">
+                  {ruleCheck.scoreItems.map((item) => (
+                    <div class="rule-score-item" key={item.ruleId}>
+                      <span>{ruleScoreLabels[item.ruleId]}</span>
+                      <strong>{item.score === null ? "无适用项" : `${item.score} 分`}</strong>
+                      <small>
+                        {item.checked === 0 ? "未检查到适用节点" : `${item.passed}/${item.checked} 项通过`}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {ruleCheck.issues.length > 0 && (
+                <div class="rule-filter-bar" aria-label="按规则类型筛选">
+                  <span>筛选</span>
+                  <div class="rule-filter-options">
+                    {ruleFilters.map((filter) => (
+                      <button
+                        class={`rule-filter ${ruleFilter === filter.id ? "is-active" : ""}`}
+                        type="button"
+                        key={filter.id}
+                        aria-pressed={ruleFilter === filter.id}
+                        onClick={() => setRuleFilter(filter.id)}
+                      >
+                        {filter.label}
+                      </button>
+                    ))}
+                  </div>
+                  <small>显示 {visibleIssues.length} / {ruleCheck.issues.length} 项</small>
+                </div>
+              )}
+
+              {ruleCheck.issues.length > 0 && (
+                <div class="annotation-actions">
+                  <button class="annotation-primary" type="button" disabled={visibleIssues.length === 0} onClick={createAnnotations}>
+                    标注当前筛选项
+                  </button>
+                  <button class="annotation-secondary" type="button" onClick={() => send({ type: "CLEAR_ANNOTATIONS" })}>
+                    清除标注
+                  </button>
+                </div>
+              )}
+
+              {visibleIssues.length > 0 ? (
                 <div class="rule-issue-list">
-                  {ruleCheck.issues.map((issue) => (
-                    <article class="rule-issue" key={issue.id}>
+                  {visibleIssues.map((issue) => (
+                    <article
+                      class={`rule-issue ${activeIssueId === issue.id ? "is-selected" : ""}`}
+                      key={issue.id}
+                      ref={(element) => {
+                        if (element) issueCardRefs.current.set(issue.id, element);
+                        else issueCardRefs.current.delete(issue.id);
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={activeIssueId === issue.id}
+                      aria-label={`在画布中定位：${issue.nodeName}`}
+                      onClick={() => toggleIssueFocus(issue.id, issue.nodeId, issue.nodeName)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          toggleIssueFocus(issue.id, issue.nodeId, issue.nodeName);
+                        }
+                      }}
+                    >
                       <div class="rule-issue-title">
                         <span class={`severity severity-${issue.severity}`}>
                           {issue.severity === "warning" ? "建议优化" : "需修复"}
@@ -327,7 +490,9 @@ export function App() {
                   ))}
                 </div>
               ) : (
-                <p class="rule-success">当前扫描范围内未发现规则违规项。</p>
+                <p class="rule-success">
+                  {ruleCheck.issues.length === 0 ? "当前扫描范围内未发现规则违规项。" : "当前筛选条件下没有问题项。"}
+                </p>
               )}
 
               {ruleCheck.skippedContrastNodes > 0 && (
@@ -335,7 +500,8 @@ export function App() {
                   {ruleCheck.skippedContrastNodes} 个文本节点缺少可确定的纯色背景，暂未计算其对比度。
                 </p>
               )}
-            </section>
+              </div>
+            </details>
           )}
         </>
       )}

@@ -1,4 +1,4 @@
-import type { PluginMessage, SelectionSummary, UIMessage } from "../shared/messages";
+import type { PluginMessage, RuleIssue, SelectionSummary, UIMessage } from "../shared/messages";
 import { isSupportedSelectionRoot, scanScope } from "./scanner";
 
 declare const __html__: string;
@@ -118,6 +118,7 @@ function getSelectionSummary(): SelectionSummary {
   return {
     count: selection.length,
     names: selection.slice(0, 3).map((node) => node.name),
+    selectedNodeId: selection.length === 1 ? selection[0].id : null,
     canScanSelection: selection.length === 1 && isSupportedSelectionRoot(selection[0]),
   };
 }
@@ -130,15 +131,95 @@ function sendSelection(): void {
   post({ type: "SELECTION_CHANGED", selection: getSelectionSummary() });
 }
 
+function isSceneNode(node: BaseNode): node is SceneNode {
+  return node.type !== "DOCUMENT" && node.type !== "PAGE";
+}
+
+async function locateNode(nodeId: string): Promise<void> {
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node || !isSceneNode(node)) {
+    throw new Error("未找到该节点；它可能已被删除，或不在当前页面中。");
+  }
+
+  figma.currentPage.selection = [node];
+  figma.viewport.scrollAndZoomIntoView([node]);
+  post({ type: "NODE_LOCATED", nodeId, nodeName: node.name });
+}
+
+function clearNodeFocus(): void {
+  figma.currentPage.selection = [];
+  post({ type: "NODE_FOCUS_CLEARED" });
+}
+
+const ANNOTATION_ROOT_KEY = "critiquecrew-annotation-root";
+
+function annotationRoots(): SceneNode[] {
+  return figma.currentPage.findAll(
+    (node) => node.getPluginData(ANNOTATION_ROOT_KEY) === "true",
+  );
+}
+
+function clearAnnotations(): number {
+  const roots = annotationRoots();
+  for (const root of roots) root.remove();
+  return roots.length;
+}
+
+// Canvas annotations are temporary UI, not part of the user's design.
+figma.on("close", () => {
+  clearAnnotations();
+});
+
+function annotationColor(severity: RuleIssue["severity"]): RGB {
+  return severity === "error" ? { r: 0.88, g: 0.18, b: 0.24 } : { r: 0.93, g: 0.56, b: 0.04 };
+}
+
+async function createAnnotations(issues: readonly RuleIssue[]): Promise<number> {
+  clearAnnotations();
+  const markers: RectangleNode[] = [];
+  const seenNodeIds = new Set<string>();
+
+  for (const issue of issues) {
+    if (seenNodeIds.has(issue.nodeId)) continue;
+    seenNodeIds.add(issue.nodeId);
+
+    const node = await figma.getNodeByIdAsync(issue.nodeId);
+    if (!node || !isSceneNode(node) || !node.absoluteBoundingBox) continue;
+
+    const bounds = node.absoluteBoundingBox;
+    const marker = figma.createRectangle();
+    marker.name = `CritiqueCrew 标注 · ${issue.nodeName}`;
+    marker.x = bounds.x - 3;
+    marker.y = bounds.y - 3;
+    marker.resizeWithoutConstraints(bounds.width + 6, bounds.height + 6);
+    marker.fills = [];
+    marker.strokes = [{ type: "SOLID", color: annotationColor(issue.severity) }];
+    marker.strokeWeight = 2;
+    marker.cornerRadius = 4;
+    marker.locked = true;
+    markers.push(marker);
+  }
+
+  if (markers.length === 0) return 0;
+
+  const group = figma.group(markers, figma.currentPage);
+  group.name = "CritiqueCrew · 规则问题标注（可清除）";
+  group.setPluginData(ANNOTATION_ROOT_KEY, "true");
+  group.locked = true;
+  return markers.length;
+}
+
 figma.on("selectionchange", sendSelection);
 
-figma.ui.onmessage = (message: PluginMessage) => {
+figma.ui.onmessage = async (message: PluginMessage) => {
   switch (message.type) {
     case "UI_READY":
       sendSelection();
       break;
     case "SCAN_REQUEST":
       try {
+        // Annotations describe a previous scan and must never survive into a new result set.
+        clearAnnotations();
         post({ type: "SCAN_RESULT", result: scanScope(message.scope) });
       } catch (error) {
         post({
@@ -146,6 +227,33 @@ figma.ui.onmessage = (message: PluginMessage) => {
           message: error instanceof Error ? error.message : "扫描失败，请重试。",
         });
       }
+      break;
+    case "LOCATE_NODE":
+      try {
+        await locateNode(message.nodeId);
+      } catch (error) {
+        post({
+          type: "PLUGIN_ERROR",
+          message: error instanceof Error ? error.message : "定位节点失败，请重试。",
+        });
+      }
+      break;
+    case "CLEAR_NODE_FOCUS":
+      clearNodeFocus();
+      break;
+    case "CREATE_ANNOTATIONS":
+      try {
+        const count = await createAnnotations(message.issues);
+        post({ type: "ANNOTATIONS_CREATED", count });
+      } catch (error) {
+        post({
+          type: "PLUGIN_ERROR",
+          message: error instanceof Error ? error.message : "创建画布标注失败，请重试。",
+        });
+      }
+      break;
+    case "CLEAR_ANNOTATIONS":
+      post({ type: "ANNOTATIONS_CLEARED", count: clearAnnotations() });
       break;
     case "REPAIR_PROTOTYPE_HIERARCHY": {
       const movedCount = repairPrototypeHierarchy();
