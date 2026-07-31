@@ -1,3 +1,5 @@
+import type { ReviewAnnotationIssue } from "./annotations";
+
 export type ScanScope = "selection" | "page";
 
 export type SelectionSummary = {
@@ -5,6 +7,8 @@ export type SelectionSummary = {
   names: string[];
   selectedNodeId: string | null;
   canScanSelection: boolean;
+  pageId: string;
+  pageName: string;
 };
 
 export type SolidColorSnapshot = {
@@ -46,9 +50,12 @@ export type ScanResult = {
   rootId: string;
   rootName: string;
   rootType: string;
+  pageId?: string;
+  pageName?: string;
   nodeCount: number;
   nodes: NodeSnapshot[];
   truncated: boolean;
+  screenshotBase64?: string;
   scannedAt: string;
 };
 
@@ -87,18 +94,24 @@ export type PluginMessage =
   | { type: "UI_READY" }
   | { type: "SCAN_REQUEST"; scope: ScanScope }
   | { type: "LOCATE_NODE"; nodeId: string }
+  | { type: "LOCATE_SCOPE"; rootId: string }
   | { type: "CLEAR_NODE_FOCUS" }
   | { type: "CREATE_ANNOTATIONS"; issues: RuleIssue[] }
   | { type: "CLEAR_ANNOTATIONS" }
-  | { type: "REPAIR_PROTOTYPE_HIERARCHY" }
+  | { type: "CREATE_REVIEW_ANNOTATIONS"; issues: ReviewAnnotationIssue[] }
+  | { type: "CLEAR_REVIEW_ANNOTATIONS" }
+  | { type: "REPAIR_SELECTED_FRAME_HIERARCHY" }
   | { type: "CLOSE_PLUGIN" };
 
 export type UIMessage =
   | { type: "SELECTION_CHANGED"; selection: SelectionSummary }
   | { type: "SCAN_RESULT"; result: ScanResult }
   | { type: "NODE_LOCATED"; nodeId: string; nodeName: string }
+  | { type: "SCOPE_LOCATED"; rootId: string; rootName: string }
   | { type: "NODE_FOCUS_CLEARED" }
   | { type: "ANNOTATIONS_CREATED"; count: number }
   | { type: "ANNOTATIONS_CLEARED"; count: number }
+  | { type: "REVIEW_ANNOTATIONS_CREATED"; count: number }
+  | { type: "REVIEW_ANNOTATIONS_CLEARED"; count: number }
   | { type: "HIERARCHY_REPAIRED"; movedCount: number }
   | { type: "PLUGIN_ERROR"; message: string };

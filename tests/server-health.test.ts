@@ -26,3 +26,16 @@ describe("GET /health", () => {
     expect(JSON.stringify(response.body)).not.toContain(config.apiKey);
   });
 });
+
+describe("POST /api/review", () => {
+  it("returns the three Mock role reviews", async () => {
+    const response = await request(createApp(config)).post("/api/review").send({
+      scan: { scope: "selection", rootId: "root", rootName: "Root", rootType: "FRAME", nodeCount: 0, truncated: false, nodes: [] },
+      rules: { issues: [], skippedContrastNodes: 0, score: null, scoreItems: [] },
+    }).expect(200);
+
+    expect(response.body.mock).toBe(true);
+    expect(response.body.reviews).toHaveLength(3);
+    expect(response.body.reviews.map((review: { role: string }) => review.role)).toEqual(["visual", "accessibility", "interaction"]);
+  });
+});

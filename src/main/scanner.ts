@@ -182,6 +182,8 @@ export function scanScope(scope: ScanScope): ScanResult {
     rootId,
     rootName,
     rootType,
+    pageId: figma.currentPage.id,
+    pageName: figma.currentPage.name,
     nodeCount: result.nodes.length,
     nodes: result.nodes,
     truncated: result.truncated,
