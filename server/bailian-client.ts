@@ -5,13 +5,14 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 };
 
 export type CompletionRequest = {
   messages: ChatMessage[];
   model?: string;
   jsonMode?: boolean;
+  temperature?: number;
 };
 
 export type CompletionResult = {
@@ -28,6 +29,9 @@ export type CompletionResult = {
 };
 
 type FetchLike = typeof fetch;
+const MAX_RETRY_ATTEMPTS = 1;
+
+class RetryableRequestError extends Error {}
 
 const responseSchema = z.object({
   id: z.string().min(1),
@@ -81,6 +85,23 @@ export class BailianClient {
       throw new Error("DASHSCOPE_API_KEY 未配置，请在本地 .env 中填写按量付费 API Key。");
     }
 
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.completeOnce(request, model, startedAt);
+      } catch (error) {
+        lastError = error;
+        if (!(error instanceof RetryableRequestError) || attempt === MAX_RETRY_ATTEMPTS) throw error;
+      }
+    }
+    throw lastError;
+  }
+
+  private async completeOnce(
+    request: CompletionRequest,
+    model: string,
+    startedAt: number,
+  ): Promise<CompletionResult> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
@@ -95,6 +116,7 @@ export class BailianClient {
           model,
           messages: request.messages,
           enable_thinking: false,
+          ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
           ...(request.jsonMode ? { response_format: { type: "json_object" } } : {}),
         }),
         signal: controller.signal,
@@ -102,9 +124,11 @@ export class BailianClient {
 
       if (!response.ok) {
         const details = sanitizedMessage(await response.text(), this.config.apiKey);
-        throw new Error(
-          `百炼请求失败（HTTP ${response.status}）${details ? `：${details}` : ""}`,
-        );
+        const message = `百炼请求失败（HTTP ${response.status}）${details ? `：${details}` : ""}`;
+        if (response.status === 429 || response.status >= 500) {
+          throw new RetryableRequestError(message);
+        }
+        throw new Error(message);
       }
 
       const parsed = responseSchema.safeParse(await response.json());
@@ -127,7 +151,7 @@ export class BailianClient {
       };
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`百炼请求超时（${Math.round(this.timeoutMs / 1000)} 秒）。`);
+        throw new RetryableRequestError(`百炼请求超时（${Math.round(this.timeoutMs / 1000)} 秒），已自动重试一次。`);
       }
       throw error;
     } finally {

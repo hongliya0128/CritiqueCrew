@@ -73,4 +73,29 @@ describe("BailianClient", () => {
       client.complete({ messages: [{ role: "user", content: "Return JSON" }] }),
     ).rejects.toThrow("choices 必须是非空数组");
   });
+
+  it("retries one time after a 429 response", async () => {
+    let calls = 0;
+    const fetchMock: typeof fetch = async () => {
+      calls += 1;
+      if (calls === 1) return new Response("rate limited", { status: 429 });
+      return new Response(
+        JSON.stringify({
+          id: "chatcmpl-retry",
+          model: "qwen3.7-plus",
+          choices: [{ message: { content: '{"status":"ok"}' } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+    const client = new BailianClient(config(), fetchMock);
+
+    const result = await client.complete({
+      messages: [{ role: "user", content: "Return JSON" }],
+      jsonMode: true,
+    });
+
+    expect(calls).toBe(2);
+    expect(JSON.parse(result.content)).toEqual({ status: "ok" });
+  });
 });

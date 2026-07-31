@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import {
+  findHighestPriorityReviewIssue,
+  type ReviewAnnotationIssue,
+} from "../shared/annotations";
 import type { HealthResponse } from "../shared/health";
+import type { ReviewerRole, ReviewResponse } from "../shared/review";
+import { getReviewBasis } from "../shared/review-basis";
 import type {
   NodeSnapshot,
   PluginMessage,
@@ -10,7 +16,7 @@ import type {
   UIMessage,
 } from "../shared/messages";
 import { checkRules } from "../shared/rule-engine";
-import { getHealth } from "./api";
+import { getHealth, requestReview } from "./api";
 
 const NODE_PREVIEW_LIMIT = 20;
 
@@ -19,6 +25,8 @@ const emptySelection: SelectionSummary = {
   names: [],
   selectedNodeId: null,
   canScanSelection: false,
+  pageId: "",
+  pageName: "",
 };
 
 function send(message: PluginMessage): void {
@@ -46,6 +54,10 @@ function optionalNumber(value: number | "mixed" | null, suffix = ""): string {
   return value === null ? "—" : `${value}${suffix}`;
 }
 
+function shortScopeName(name: string): string {
+  return name.split("/").find((part) => /^A\d+/i.test(part)) ?? name;
+}
+
 const ruleScoreLabels = {
   "color-contrast": "颜色对比度",
   "font-size": "字号大小",
@@ -59,6 +71,24 @@ const ruleFilters: { id: RuleId | "all"; label: string }[] = [
   { id: "target-size", label: "点击区域" },
 ];
 
+const reviewRoleLabels = {
+  visual: "视觉设计师",
+  accessibility: "无障碍专家",
+  interaction: "交互设计师",
+} as const;
+
+const reviewRoleShortLabels = {
+  visual: "视觉",
+  accessibility: "无障碍",
+  interaction: "交互",
+} as const;
+
+const reviewSeverityLabels = {
+  high: "高优先级",
+  medium: "中优先级",
+  low: "低优先级",
+} as const;
+
 export function App() {
   const [selection, setSelection] = useState(emptySelection);
   const [status, setStatus] = useState("正在连接 Figma 主线程...");
@@ -70,7 +100,13 @@ export function App() {
   const [nodeQuery, setNodeQuery] = useState("");
   const [proxyHealth, setProxyHealth] = useState<HealthResponse | null>(null);
   const [proxyError, setProxyError] = useState(false);
+  const [reviewResponse, setReviewResponse] = useState<ReviewResponse | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const [activeReviewIssueId, setActiveReviewIssueId] = useState<string | null>(null);
   const issueCardRefs = useRef(new Map<string, HTMLElement>());
+  const reviewIssueCardRefs = useRef(new Map<string, HTMLElement>());
+  const reviewerCardRefs = useRef(new Map<ReviewerRole, HTMLDetailsElement>());
+  const agentReviewPanelRef = useRef<HTMLDetailsElement>(null);
 
   const normalizedQuery = nodeQuery.trim().toLocaleLowerCase();
   const matchingNodes = scanResult
@@ -87,6 +123,80 @@ export function App() {
   const visibleIssues = ruleCheck
     ? ruleCheck.issues.filter((issue) => ruleFilter === "all" || issue.ruleId === ruleFilter)
     : [];
+  const reviewAnnotationIssues: ReviewAnnotationIssue[] = reviewResponse && scanResult
+    ? reviewResponse.reviews.flatMap((review) =>
+        review.issues.map((issue) => ({
+            nodeId: issue.nodeId ?? scanResult.rootId,
+            nodeName: issue.nodeName ?? scanResult.rootName,
+            role: review.role,
+            severity: issue.severity,
+            screenLevel: issue.nodeId === null,
+          })),
+      )
+    : [];
+  const reviewAnnotationNodeCount = new Set(reviewAnnotationIssues.map((issue) => issue.nodeId)).size;
+  const reviewIssueCount = reviewResponse
+    ? reviewResponse.reviews.reduce((total, review) => total + review.issues.length, 0)
+    : 0;
+  const selectedNodeIsInScan = Boolean(
+    scanResult &&
+    selection.selectedNodeId &&
+    (selection.selectedNodeId === scanResult.rootId ||
+      scanResult.nodes.some((node) => node.id === selection.selectedNodeId)),
+  );
+  const selectedPageChanged = Boolean(
+    scanResult?.pageId &&
+    selection.pageId &&
+    scanResult.pageId !== selection.pageId,
+  );
+  const selectionOutsideScan = Boolean(
+    scanResult &&
+    (selectedPageChanged ||
+      (selection.selectedNodeId && !selectedNodeIsInScan)),
+  );
+  const showSelectionWarning = selectionOutsideScan && !reviewing && !proxyError;
+  const currentSelectionLabel = selection.names[0] || selection.pageName || "当前范围";
+  const scanTargetShortName = scanResult ? shortScopeName(scanResult.rootName) : "";
+  const proxyLabel = proxyHealth ? "百炼已连接" : proxyError ? "代理未连接" : "正在连接";
+  const workflowGuide = proxyError
+    ? {
+        stage: "连接服务",
+        message: "请先启动本地代理，连接成功后即可扫描与评审。",
+      }
+    : reviewing
+      ? {
+          stage: "评审进行中",
+          message: "三位专家正在独立评审当前界面，请稍候。",
+        }
+      : showSelectionWarning
+        ? {
+            stage: "选择已变更",
+            message: `当前选择为「${currentSelectionLabel}」，下方仍显示「${scanResult!.rootName}」的结果。评审新范围前请重新扫描。`,
+          }
+        : reviewResponse
+        ? {
+            stage: reviewResponse.incomplete ? "检查评审结果" : "评审已完成",
+            message: "展开下方专家卡片，查看具体问题并定位到画布节点。",
+          }
+        : scanResult
+          ? {
+              stage: "下一步 · AI 评审",
+              message: `已扫描「${scanResult.rootName}」，现在可以运行三位专家评审。`,
+            }
+          : selection.canScanSelection
+            ? {
+                stage: "下一步 · 扫描",
+                message: `已选择「${selection.names[0] ?? "当前 Frame"}」，点击下方按钮开始扫描。`,
+              }
+            : selection.count > 0
+              ? {
+                  stage: "调整选择",
+                  message: "请选择一个 Frame、Component、Instance 或 Section。",
+                }
+              : {
+                  stage: "第一步 · 选择范围",
+                  message: "先在 Figma 画布中选择一个需要评估的 Frame。",
+                };
 
   useEffect(() => {
     getHealth()
@@ -117,6 +227,8 @@ export function App() {
         setActiveIssueId(null);
         setRuleFilter("all");
         setNodeQuery("");
+        setReviewResponse(null);
+        setActiveReviewIssueId(null);
         setStatus(
           message.result.truncated
             ? `已读取前 ${message.result.nodeCount} 个可见节点，结果已截断。`
@@ -126,6 +238,10 @@ export function App() {
 
       if (message.type === "NODE_LOCATED") {
         setStatus(`已定位到画布节点：${message.nodeName}。`);
+      }
+
+      if (message.type === "SCOPE_LOCATED") {
+        setStatus(`已定位到评估范围：${message.rootName}。`);
       }
 
       if (message.type === "NODE_FOCUS_CLEARED") {
@@ -144,6 +260,18 @@ export function App() {
         setStatus(message.count > 0 ? `已清除 ${message.count} 组画布标注。` : "当前没有可清除的画布标注。");
       }
 
+      if (message.type === "REVIEW_ANNOTATIONS_CREATED") {
+        setStatus(
+          message.count > 0
+            ? `已在画布中创建 ${message.count} 个 AI 评审问题标注。`
+            : "未找到可标注的 AI 评审问题节点。",
+        );
+      }
+
+      if (message.type === "REVIEW_ANNOTATIONS_CLEARED") {
+        setStatus(message.count > 0 ? "已清除 AI 评审问题标注。" : "当前没有可清除的 AI 评审标注。");
+      }
+
       if (message.type === "PLUGIN_ERROR") {
         setActiveIssueId(null);
         setStatus(message.message);
@@ -152,8 +280,8 @@ export function App() {
       if (message.type === "HIERARCHY_REPAIRED") {
         setStatus(
           message.movedCount > 0
-            ? `已完成两页层级整理，共归入 ${message.movedCount} 个节点。`
-            : "两页原型当前已是目标层级。",
+            ? `已整理选中 Frame 的层级，共调整 ${message.movedCount} 个节点。`
+            : "选中 Frame 当前没有需要整理的层级。",
         );
       }
 
@@ -170,6 +298,11 @@ export function App() {
       return;
     }
 
+    if (reviewResponse && findHighestPriorityReviewIssue(reviewResponse.reviews, canvasSelectedNodeId)) {
+      setActiveIssueId(null);
+      return;
+    }
+
     const issue = ruleCheck.issues.find((item) => item.nodeId === canvasSelectedNodeId);
 
     if (!issue) {
@@ -182,7 +315,32 @@ export function App() {
       issueCardRefs.current.get(issue.id)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [canvasSelectedNodeId, ruleCheck, scanResult]);
+  }, [canvasSelectedNodeId, ruleCheck, scanResult, reviewResponse]);
+
+  useEffect(() => {
+    if (!canvasSelectedNodeId || !reviewResponse) {
+      setActiveReviewIssueId(null);
+      return;
+    }
+
+    const match = findHighestPriorityReviewIssue(reviewResponse.reviews, canvasSelectedNodeId);
+    if (!match) {
+      setActiveReviewIssueId(null);
+      return;
+    }
+
+    setActiveReviewIssueId(match.issue.id);
+    const timer = window.setTimeout(() => {
+      if (agentReviewPanelRef.current) agentReviewPanelRef.current.open = true;
+      const reviewerCard = reviewerCardRefs.current.get(match.role);
+      if (reviewerCard) reviewerCard.open = true;
+      reviewIssueCardRefs.current.get(match.issue.id)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [canvasSelectedNodeId, reviewResponse]);
 
   function requestScan(scope: ScanScope): void {
     setStatus("正在读取节点树...");
@@ -192,9 +350,32 @@ export function App() {
     send({ type: "SCAN_REQUEST", scope });
   }
 
+  async function runAgentReview(): Promise<void> {
+    if (!scanResult || !ruleCheck || reviewing) return;
+    setReviewing(true);
+    setReviewResponse(null);
+    setActiveReviewIssueId(null);
+    setStatus("正在并行请求三位评审角色...");
+    try {
+      const response = await requestReview({ scan: scanResult, rules: ruleCheck, screenshotBase64: scanResult.screenshotBase64 });
+      setReviewResponse(response);
+      setStatus(response.incomplete ? "评审已完成，但有角色未成功返回。" : "三位评审角色已完成。 ");
+    } catch (error) {
+      setStatus(error instanceof Error ? `评审失败：${error.message}` : "评审失败，请检查本地代理。");
+    } finally {
+      setReviewing(false);
+    }
+  }
+
   function requestLocate(nodeId: string, nodeName: string): void {
     setStatus(`正在定位节点：${nodeName}...`);
     send({ type: "LOCATE_NODE", nodeId });
+  }
+
+  function requestScopeLocate(): void {
+    if (!scanResult) return;
+    setStatus(`正在定位评估范围：${scanResult.rootName}...`);
+    send({ type: "LOCATE_SCOPE", rootId: scanResult.rootId });
   }
 
   function toggleIssueFocus(issueId: string, nodeId: string, nodeName: string): void {
@@ -215,51 +396,73 @@ export function App() {
     send({ type: "CREATE_ANNOTATIONS", issues: visibleIssues });
   }
 
+  function createReviewAnnotations(): void {
+    if (reviewAnnotationIssues.length === 0) return;
+    setStatus("正在创建 AI 评审问题标注...");
+    send({ type: "CREATE_REVIEW_ANNOTATIONS", issues: reviewAnnotationIssues });
+  }
+
   return (
     <main class="app-shell">
-      <header>
-        <p class="eyebrow">CRITIQUECREW</p>
+      <header class="app-header">
+        <div class="app-header-top">
+          <p class="eyebrow">CRITIQUECREW</p>
+          <span
+            class={`connection-pill ${proxyHealth ? "is-online" : proxyError ? "is-offline" : "is-checking"}`}
+            title={proxyHealth
+              ? `${proxyHealth.provider} · ${proxyHealth.model} · ${proxyHealth.mockMode ? "Mock 模式" : "真实模式"}`
+              : proxyError
+                ? "请确认本地代理正在运行"
+                : "正在连接本地代理"}
+          >
+            <i aria-hidden="true" />
+            <b>{proxyLabel}</b>
+          </span>
+        </div>
         <h1>多视角 UI 评估</h1>
-        <p class="subtitle">第一阶段：Figma 节点树读取</p>
+        <div class={`workflow-hint ${showSelectionWarning ? "is-warning" : ""}`} aria-live="polite" title={status}>
+          <span>{workflowGuide.stage}</span>
+          <p>{workflowGuide.message}</p>
+          {showSelectionWarning && (
+            <button type="button" onClick={requestScopeLocate}>
+              返回 {scanTargetShortName}
+            </button>
+          )}
+        </div>
       </header>
 
-      <section
-        class={`proxy-card ${proxyHealth ? "is-online" : proxyError ? "is-offline" : "is-checking"}`}
-        aria-label="百炼代理状态"
-      >
-        <i aria-hidden="true" />
-        <div>
+      <section class="scan-launch" aria-label="开始评估">
+        <div class="scan-launch-copy">
+          <div class="scan-launch-heading">
+            <span>开始评估</span>
+            <details class="optional-tools">
+              <summary>可选工具</summary>
+              <div>
+                <p>当选中 Frame 的内部图层层级混乱时使用；正常扫描与评审无需执行。</p>
+                <button
+                  class="secondary hierarchy-button"
+                  type="button"
+                  onClick={() => send({ type: "REPAIR_SELECTED_FRAME_HIERARCHY" })}
+                >
+                  整理选中 Frame 层级
+                </button>
+              </div>
+            </details>
+          </div>
           <strong>
-            {proxyHealth
-              ? "本地代理已连接"
-              : proxyError
-                ? "本地代理未连接"
-                : "正在检查本地代理"}
+            {selection.canScanSelection
+              ? `扫描 ${selection.names[0] ?? "当前 Frame"}`
+              : "请先选择一个 Frame"}
           </strong>
-          <p>
-            {proxyHealth
-              ? `${proxyHealth.provider} · ${proxyHealth.model} · ${proxyHealth.mockMode ? "Mock 模式" : "真实模式"} · Key ${proxyHealth.apiKeyConfigured ? "已配置" : "未配置"}`
-              : proxyError
-                ? "请确认 npm run dev 正在运行。"
-                : "正在请求 http://localhost:8787/health"}
-          </p>
         </div>
-      </section>
-
-      <section class="selection-card" aria-label="当前选择">
-        <span>当前选择</span>
-        <strong>{selection.count} 个图层</strong>
-        <p>{selection.names.length ? selection.names.join("、") : "尚未选择图层。"}</p>
-        <small>
-          {selection.canScanSelection
-            ? "当前选择可作为评估范围。"
-            : "选中一个 Frame、Component、Instance 或 Section，或评估当前页面。"}
-        </small>
-      </section>
-
-      <section class="status-card" aria-live="polite">
-        <span>状态</span>
-        <p>{status}</p>
+        <button
+          class="primary scan-primary"
+          type="button"
+          disabled={!selection.canScanSelection}
+          onClick={() => requestScan("selection")}
+        >
+          扫描选中范围
+        </button>
       </section>
 
       {scanResult && (
@@ -278,14 +481,268 @@ export function App() {
               <strong>{scanResult.nodeCount}</strong>
             </div>
           </section>
+        </>
+      )}
 
-          <details class="node-preview">
-            <summary>
-              <span>节点数据预览</span>
+      <details
+        class={`agent-review panel-section ${reviewResponse ? "has-review-result" : ""}`}
+        aria-label="多智能体评审"
+        open={reviewing || Boolean(reviewResponse)}
+        ref={agentReviewPanelRef}
+      >
+            <summary
+              class="panel-summary"
+              onClick={(event) => {
+                if (!reviewResponse) event.preventDefault();
+              }}
+            >
+              <div>
+                <span class="agent-review-kicker">
+                  多智能体评审
+                  <small class="core-feature-badge">核心功能</small>
+                </span>
+                <strong>{reviewResponse ? "三位专家独立评审" : "视觉、无障碍、交互三视角"}</strong>
+              </div>
+              <button
+                class="agent-summary-review-button"
+                type="button"
+                disabled={!scanResult || reviewing}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void runAgentReview();
+                }}
+              >
+                {reviewing
+                  ? "评审中..."
+                  : selectionOutsideScan
+                    ? `${reviewResponse ? "重评" : "评审"} ${scanTargetShortName}`
+                    : reviewResponse
+                      ? "重新评审"
+                      : "运行 AI 评审"}
+              </button>
+            </summary>
+            <div class="agent-review-content">
+            {reviewResponse && (
+              <>
+                <p class="agent-review-meta">
+                  {reviewResponse.mock ? "Mock 模式" : "真实模型"} · {reviewResponse.elapsedMs}ms · {reviewResponse.incomplete ? "结果不完整" : "全部角色完成"}
+                </p>
+                <div class="agent-score-overview" aria-label="三角色评分对比">
+                  {reviewResponse.reviews.map((review) => (
+                    <div class={`agent-score-tile agent-${review.role}`} key={review.role}>
+                      <span>{reviewRoleShortLabels[review.role]}</span>
+                      <strong>{review.status === "completed" ? review.score : "—"}</strong>
+                      <small>{review.status === "completed" ? `${review.issues.length} 个问题` : "评审失败"}</small>
+                    </div>
+                  ))}
+                </div>
+                <div class="review-annotation-panel">
+                  <div class="review-annotation-heading">
+                    <span>画布标记</span>
+                    <small>
+                      共 {reviewIssueCount} 项问题，涉及 {reviewAnnotationNodeCount} 个主要节点
+                    </small>
+                  </div>
+                  <div class="review-annotation-legend" aria-label="AI 标记优先级颜色">
+                    <span class="is-high"><i aria-hidden="true" />高优先级</span>
+                    <span class="is-medium"><i aria-hidden="true" />中优先级</span>
+                    <span class="is-low"><i aria-hidden="true" />低优先级</span>
+                  </div>
+                  <div class="review-annotation-actions">
+                    <button
+                      class="annotation-primary"
+                      type="button"
+                      disabled={reviewAnnotationIssues.length === 0}
+                      onClick={createReviewAnnotations}
+                    >
+                      标记评审问题
+                    </button>
+                    <button
+                      class="annotation-secondary"
+                      type="button"
+                      onClick={() => send({ type: "CLEAR_REVIEW_ANNOTATIONS" })}
+                    >
+                      清除 AI 标记
+                    </button>
+                  </div>
+                </div>
+                <div class="agent-review-list">
+                  {reviewResponse.reviews.map((review, reviewIndex) => (
+                    <details
+                      class={`agent-card agent-${review.role}`}
+                      key={review.role}
+                      open={reviewIndex === 0}
+                      ref={(element) => {
+                        if (element) reviewerCardRefs.current.set(review.role, element);
+                        else reviewerCardRefs.current.delete(review.role);
+                      }}
+                    >
+                      <summary>
+                        <div class="agent-card-identity">
+                          <span class="agent-avatar">{reviewRoleShortLabels[review.role].slice(0, 1)}</span>
+                          <div>
+                            <strong>{reviewRoleLabels[review.role]}</strong>
+                            <small>{review.focus}</small>
+                          </div>
+                        </div>
+                        <div class="agent-card-score">
+                          <strong>{review.status === "completed" ? review.score : "—"}</strong>
+                          <span>{review.status === "completed" ? "分" : "失败"}</span>
+                        </div>
+                      </summary>
+                      <div class="agent-card-body">
+                        <p class="agent-summary">{review.summary}</p>
+                        {review.error && <p class="agent-error">{review.error}</p>}
+
+                        {review.dimensions.length > 0 && (
+                          <div class="agent-dimensions">
+                            {review.dimensions.map((dimension) => (
+                              <div class="agent-dimension" key={dimension.label}>
+                                <div>
+                                  <span>{dimension.label}</span>
+                                  <strong>{dimension.score}</strong>
+                                </div>
+                                <i><b style={{ width: `${dimension.score}%` }} /></i>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <div class="agent-issue-heading">
+                          <strong>具体问题</strong>
+                          <span>{review.issues.length} 项</span>
+                        </div>
+                        {review.issues.length > 0 ? (
+                          <div class="agent-issue-list">
+                            {review.issues.map((issue) => (
+                              <article
+                                class={`agent-issue severity-${issue.severity} ${activeReviewIssueId === issue.id ? "is-selected" : ""}`}
+                                key={issue.id}
+                                ref={(element) => {
+                                  if (element) reviewIssueCardRefs.current.set(issue.id, element);
+                                  else reviewIssueCardRefs.current.delete(issue.id);
+                                }}
+                              >
+                                <header>
+                                  <div>
+                                    <span class="agent-criterion">{issue.criterion}</span>
+                                    <span class={`agent-severity agent-severity-${issue.severity}`}>
+                                      {reviewSeverityLabels[issue.severity]}
+                                    </span>
+                                  </div>
+                                  <strong>{issue.title}</strong>
+                                </header>
+                                <dl>
+                                  <div class="agent-node-row">
+                                    <dt>主要节点</dt>
+                                    <dd>
+                                      {issue.nodeId ? (
+                                        <>
+                                          <span title={issue.nodeName ?? issue.nodeId}>{issue.nodeName ?? "未命名节点"}</span>
+                                          <code title={issue.nodeId}>{issue.nodeId}</code>
+                                          <button type="button" onClick={() => requestLocate(issue.nodeId!, issue.nodeName ?? issue.nodeId!)}>定位</button>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <span>{scanResult?.rootName ?? "当前评估范围"}</span>
+                                          <code>屏幕级问题</code>
+                                          <button type="button" onClick={requestScopeLocate}>定位范围</button>
+                                        </>
+                                      )}
+                                    </dd>
+                                  </div>
+                                  {issue.relatedNodes.length > 0 && (
+                                    <div class="agent-related-row">
+                                      <dt>关联节点</dt>
+                                      <dd>
+                                        {issue.relatedNodes.map((relatedNode) => (
+                                          <button
+                                            type="button"
+                                            key={relatedNode.nodeId}
+                                            title={`${relatedNode.nodeName} · ${relatedNode.nodeId}`}
+                                            onClick={() => requestLocate(relatedNode.nodeId, relatedNode.nodeName)}
+                                          >
+                                            {relatedNode.nodeName}
+                                          </button>
+                                        ))}
+                                      </dd>
+                                    </div>
+                                  )}
+                                  <div class="agent-primary-copy">
+                                    <dt>问题描述</dt>
+                                    <dd>{issue.explanation}</dd>
+                                  </div>
+                                  <div class="agent-primary-copy">
+                                    <dt>修改建议</dt>
+                                    <dd>{issue.suggestion}</dd>
+                                  </div>
+                                  <div class="agent-support-row">
+                                    <dt>证据依据</dt>
+                                    <dd>
+                                      <details>
+                                        <summary>
+                                          {issue.basisIds.length > 0
+                                            ? `查看证据与相关参考（${issue.basisIds.length} 项）`
+                                            : "查看评审证据（AI 专业判断）"}
+                                        </summary>
+                                        <div class="agent-support-content">
+                                          <p><strong>评审证据</strong>{issue.evidence}</p>
+                                          <p class="agent-basis-note">
+                                            该问题由 AI 结合截图、节点数据和专业知识判断；相关参考不是唯一评审来源，也不等同于合规认证。
+                                          </p>
+                                          {issue.basisIds.length > 0 && (
+                                            <div class="agent-basis-links">
+                                              <strong>相关参考</strong>
+                                              {issue.basisIds.map((basisId) => {
+                                                const basis = getReviewBasis(basisId);
+                                                return (
+                                                  <a
+                                                    href={basis.url}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    title={`${basis.publisher} · ${basis.summary}`}
+                                                    key={basis.id}
+                                                  >
+                                                    <span>{basis.kind === "standard" ? "标准" : basis.kind === "guideline" ? "指南" : "启发式"}</span>
+                                                    {basis.id}
+                                                  </a>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </details>
+                                    </dd>
+                                  </div>
+                                </dl>
+                              </article>
+                            ))}
+                          </div>
+                        ) : (
+                          <p class="agent-empty">该视角未发现需要优先处理的问题。</p>
+                        )}
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              </>
+            )}
+            </div>
+      </details>
+
+      {scanResult && (
+        <>
+          <details class="node-preview panel-section">
+            <summary class="panel-summary">
+              <div>
+                <span>节点数据预览</span>
+                <strong>{scanResult.nodeCount} 个可见节点</strong>
+              </div>
               <small>
                 {matchingNodes.length > NODE_PREVIEW_LIMIT
-                  ? `前 ${NODE_PREVIEW_LIMIT} 条`
-                  : `${matchingNodes.length} 条`}
+                  ? `显示前 ${NODE_PREVIEW_LIMIT} 条`
+                  : `显示 ${matchingNodes.length} 条`}
               </small>
             </summary>
             <div class="node-preview-body">
@@ -379,13 +836,16 @@ export function App() {
           </details>
 
           {ruleCheck && (
-            <details class="rule-results" aria-label="自动化规则检测结果">
-              <summary class="rule-results-summary">
+            <details class="rule-results panel-section" aria-label="自动化规则检测结果">
+              <summary class="rule-results-summary panel-summary">
                 <div>
                   <span>自动化规则检测</span>
                   <strong>{ruleCheck.issues.length} 项待修复</strong>
                 </div>
-                <small>已按WCAG AA、分级字号、44px自动检查</small>
+                <small class="rule-check-scope">
+                  <span>自动检查</span>
+                  <b>颜色对比度 · 字号 · 点击区域</b>
+                </small>
               </summary>
 
               <div class="rule-results-content">
@@ -506,29 +966,6 @@ export function App() {
         </>
       )}
 
-      <div class="actions scan-actions">
-        <button
-          class="secondary hierarchy-button"
-          type="button"
-          onClick={() => send({ type: "REPAIR_PROTOTYPE_HIERARCHY" })}
-        >
-          整理测试页层级
-        </button>
-        <button
-          class="primary"
-          type="button"
-          disabled={!selection.canScanSelection}
-          onClick={() => requestScan("selection")}
-        >
-          扫描选中范围
-        </button>
-        <button class="secondary page-button" type="button" onClick={() => requestScan("page")}>
-          扫描当前页面
-        </button>
-      </div>
-      <button class="close-button" type="button" onClick={() => send({ type: "CLOSE_PLUGIN" })}>
-        关闭插件
-      </button>
     </main>
   );
 }
