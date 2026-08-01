@@ -1,4 +1,5 @@
 import type { AgentReview, ReviewerRole, ReviewIssue, ReviewSeverity } from "./review";
+import type { RuleIssue } from "./messages";
 
 export type ReviewAnnotationIssue = {
   nodeId: string;
@@ -20,6 +21,10 @@ export type ReviewIssueMatch = {
   role: ReviewerRole;
   issue: ReviewIssue;
 };
+
+export type ReverseLocateTarget =
+  | { kind: "review"; match: ReviewIssueMatch }
+  | { kind: "rule"; issue: RuleIssue };
 
 const severityRank: Record<ReviewSeverity, number> = {
   high: 3,
@@ -58,12 +63,13 @@ export function aggregateReviewAnnotations(
 export function findHighestPriorityReviewIssue(
   reviews: readonly AgentReview[],
   nodeId: string,
+  screenRootId?: string,
 ): ReviewIssueMatch | null {
   let bestMatch: ReviewIssueMatch | null = null;
 
   for (const review of reviews) {
     for (const issue of review.issues) {
-      if (issue.nodeId !== nodeId) continue;
+      if ((issue.nodeId ?? screenRootId) !== nodeId) continue;
       if (!bestMatch || severityRank[issue.severity] > severityRank[bestMatch.issue.severity]) {
         bestMatch = { role: review.role, issue };
       }
@@ -71,4 +77,35 @@ export function findHighestPriorityReviewIssue(
   }
 
   return bestMatch;
+}
+
+export function chooseReverseLocateTarget(options: {
+  nodeId: string;
+  ruleAnnotationNodeIds: ReadonlySet<string>;
+  reviewAnnotationNodeIds: ReadonlySet<string>;
+  ruleIssues: readonly RuleIssue[];
+  reviews: readonly AgentReview[];
+  screenRootId?: string;
+}): ReverseLocateTarget | null {
+  const {
+    nodeId,
+    ruleAnnotationNodeIds,
+    reviewAnnotationNodeIds,
+    ruleIssues,
+    reviews,
+    screenRootId,
+  } = options;
+
+  if (reviewAnnotationNodeIds.has(nodeId)) {
+    const match = findHighestPriorityReviewIssue(reviews, nodeId, screenRootId);
+    if (match) return { kind: "review", match };
+  }
+
+  if (ruleAnnotationNodeIds.has(nodeId)) {
+    const matchingIssues = ruleIssues.filter((issue) => issue.nodeId === nodeId);
+    const issue = matchingIssues.find((item) => item.severity === "error") ?? matchingIssues[0];
+    if (issue) return { kind: "rule", issue };
+  }
+
+  return null;
 }

@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import {
-  findHighestPriorityReviewIssue,
+  chooseReverseLocateTarget,
   type ReviewAnnotationIssue,
 } from "../shared/annotations";
 import type { HealthResponse } from "../shared/health";
-import type { ReviewerRole, ReviewResponse } from "../shared/review";
+import type { ReviewAspect, ReviewDirection, ReviewerRole, ReviewResponse } from "../shared/review";
 import { getReviewBasis } from "../shared/review-basis";
 import type {
-  NodeSnapshot,
   PluginMessage,
   RuleId,
   ScanResult,
@@ -17,8 +16,6 @@ import type {
 } from "../shared/messages";
 import { checkRules } from "../shared/rule-engine";
 import { getHealth, requestReview } from "./api";
-
-const NODE_PREVIEW_LIMIT = 20;
 
 const emptySelection: SelectionSummary = {
   count: 0,
@@ -33,36 +30,9 @@ function send(message: PluginMessage): void {
   parent.postMessage({ pluginMessage: message }, "*");
 }
 
-function channelToHex(value: number): string {
-  return Math.round(Math.max(0, Math.min(1, value)) * 255)
-    .toString(16)
-    .padStart(2, "0")
-    .toUpperCase();
-}
-
-function fillLabel(node: NodeSnapshot): string {
-  const fill = node.fills[0];
-  if (!fill) return "无纯色填充";
-  const hex = `#${channelToHex(fill.r)}${channelToHex(fill.g)}${channelToHex(fill.b)}`;
-  const alpha = fill.a < 1 ? ` / ${Math.round(fill.a * 100)}%` : "";
-  const more = node.fills.length > 1 ? ` +${node.fills.length - 1}` : "";
-  return `${hex}${alpha}${more}`;
-}
-
-function optionalNumber(value: number | "mixed" | null, suffix = ""): string {
-  if (value === "mixed") return "混合";
-  return value === null ? "—" : `${value}${suffix}`;
-}
-
 function shortScopeName(name: string): string {
   return name.split("/").find((part) => /^A\d+/i.test(part)) ?? name;
 }
-
-const ruleScoreLabels = {
-  "color-contrast": "颜色对比度",
-  "font-size": "字号大小",
-  "target-size": "点击区域",
-} as const;
 
 const ruleFilters: { id: RuleId | "all"; label: string }[] = [
   { id: "all", label: "全部" },
@@ -89,6 +59,33 @@ const reviewSeverityLabels = {
   low: "低优先级",
 } as const;
 
+const reviewAspectLabels: Record<ReviewAspect, string> = {
+  "visual-prominence": "视觉显著性",
+  "information-density": "信息密度",
+  readability: "可读性",
+  "interaction-entry": "操作入口",
+  "status-feedback": "状态反馈",
+  "error-prevention": "误操作防护",
+  other: "其他议题",
+};
+
+const reviewDirectionLabels: Record<ReviewDirection, string> = {
+  strengthen: "强化",
+  weaken: "弱化",
+  add: "增加",
+  remove: "移除",
+  retain: "保留",
+  restructure: "重构",
+  unspecified: "未指定",
+};
+
+const arbitrationStatusLabels = {
+  completed: "仲裁完成",
+  "not-needed": "无需仲裁",
+  failed: "仲裁失败",
+  skipped: "已跳过",
+} as const;
+
 export function App() {
   const [selection, setSelection] = useState(emptySelection);
   const [status, setStatus] = useState("正在连接 Figma 主线程...");
@@ -96,8 +93,8 @@ export function App() {
   const [ruleCheck, setRuleCheck] = useState<ReturnType<typeof checkRules> | null>(null);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   const [canvasSelectedNodeId, setCanvasSelectedNodeId] = useState<string | null>(null);
+  const [canvasSelectionRevision, setCanvasSelectionRevision] = useState(0);
   const [ruleFilter, setRuleFilter] = useState<RuleId | "all">("all");
-  const [nodeQuery, setNodeQuery] = useState("");
   const [proxyHealth, setProxyHealth] = useState<HealthResponse | null>(null);
   const [proxyError, setProxyError] = useState(false);
   const [reviewResponse, setReviewResponse] = useState<ReviewResponse | null>(null);
@@ -107,19 +104,11 @@ export function App() {
   const reviewIssueCardRefs = useRef(new Map<string, HTMLElement>());
   const reviewerCardRefs = useRef(new Map<ReviewerRole, HTMLDetailsElement>());
   const agentReviewPanelRef = useRef<HTMLDetailsElement>(null);
+  const ruleResultsPanelRef = useRef<HTMLDetailsElement>(null);
+  const annotatedRuleNodeIdsRef = useRef<Set<string>>(new Set());
+  const annotatedReviewNodeIdsRef = useRef<Set<string>>(new Set());
+  const suppressedReverseLocateNodeIdRef = useRef<string | null>(null);
 
-  const normalizedQuery = nodeQuery.trim().toLocaleLowerCase();
-  const matchingNodes = scanResult
-    ? scanResult.nodes.filter((node) => {
-        if (!normalizedQuery) return true;
-        return (
-          node.name.toLocaleLowerCase().includes(normalizedQuery) ||
-          node.id.toLocaleLowerCase().includes(normalizedQuery) ||
-          node.type.toLocaleLowerCase().includes(normalizedQuery)
-        );
-      })
-    : [];
-  const previewNodes = matchingNodes.slice(0, NODE_PREVIEW_LIMIT);
   const visibleIssues = ruleCheck
     ? ruleCheck.issues.filter((issue) => ruleFilter === "all" || issue.ruleId === ruleFilter)
     : [];
@@ -218,6 +207,7 @@ export function App() {
       if (message.type === "SELECTION_CHANGED") {
         setSelection(message.selection);
         setCanvasSelectedNodeId(message.selection.selectedNodeId);
+        setCanvasSelectionRevision((revision) => revision + 1);
         setStatus("已同步当前选中状态。");
       }
 
@@ -226,9 +216,10 @@ export function App() {
         setRuleCheck(checkRules(message.result.nodes));
         setActiveIssueId(null);
         setRuleFilter("all");
-        setNodeQuery("");
         setReviewResponse(null);
         setActiveReviewIssueId(null);
+        annotatedRuleNodeIdsRef.current.clear();
+        annotatedReviewNodeIdsRef.current.clear();
         setStatus(
           message.result.truncated
             ? `已读取前 ${message.result.nodeCount} 个可见节点，结果已截断。`
@@ -249,6 +240,7 @@ export function App() {
       }
 
       if (message.type === "ANNOTATIONS_CREATED") {
+        annotatedRuleNodeIdsRef.current = new Set(message.nodeIds);
         setStatus(
           message.count > 0
             ? `已在画布中创建 ${message.count} 个规则问题标注。`
@@ -257,10 +249,13 @@ export function App() {
       }
 
       if (message.type === "ANNOTATIONS_CLEARED") {
+        annotatedRuleNodeIdsRef.current.clear();
+        setActiveIssueId(null);
         setStatus(message.count > 0 ? `已清除 ${message.count} 组画布标注。` : "当前没有可清除的画布标注。");
       }
 
       if (message.type === "REVIEW_ANNOTATIONS_CREATED") {
+        annotatedReviewNodeIdsRef.current = new Set(message.nodeIds);
         setStatus(
           message.count > 0
             ? `已在画布中创建 ${message.count} 个 AI 评审问题标注。`
@@ -269,6 +264,8 @@ export function App() {
       }
 
       if (message.type === "REVIEW_ANNOTATIONS_CLEARED") {
+        annotatedReviewNodeIdsRef.current.clear();
+        setActiveReviewIssueId(null);
         setStatus(message.count > 0 ? "已清除 AI 评审问题标注。" : "当前没有可清除的 AI 评审标注。");
       }
 
@@ -293,60 +290,71 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!canvasSelectedNodeId || !ruleCheck || !scanResult) {
-      if (!canvasSelectedNodeId) setActiveIssueId(null);
-      return;
-    }
-
-    if (reviewResponse && findHighestPriorityReviewIssue(reviewResponse.reviews, canvasSelectedNodeId)) {
+    if (!canvasSelectedNodeId) {
       setActiveIssueId(null);
-      return;
-    }
-
-    const issue = ruleCheck.issues.find((item) => item.nodeId === canvasSelectedNodeId);
-
-    if (!issue) {
-      setActiveIssueId(null);
-      return;
-    }
-
-    setActiveIssueId(issue.id);
-    const timer = window.setTimeout(() => {
-      issueCardRefs.current.get(issue.id)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [canvasSelectedNodeId, ruleCheck, scanResult, reviewResponse]);
-
-  useEffect(() => {
-    if (!canvasSelectedNodeId || !reviewResponse) {
       setActiveReviewIssueId(null);
       return;
     }
 
-    const match = findHighestPriorityReviewIssue(reviewResponse.reviews, canvasSelectedNodeId);
-    if (!match) {
+    const suppressedNodeId = suppressedReverseLocateNodeIdRef.current;
+    if (suppressedNodeId) {
+      suppressedReverseLocateNodeIdRef.current = null;
+      if (suppressedNodeId === canvasSelectedNodeId) {
+        setActiveIssueId(null);
+        setActiveReviewIssueId(null);
+        return;
+      }
+    }
+
+    const target = chooseReverseLocateTarget({
+      nodeId: canvasSelectedNodeId,
+      ruleAnnotationNodeIds: annotatedRuleNodeIdsRef.current,
+      reviewAnnotationNodeIds: annotatedReviewNodeIdsRef.current,
+      ruleIssues: ruleCheck?.issues ?? [],
+      reviews: reviewResponse?.reviews ?? [],
+      screenRootId: scanResult?.rootId,
+    });
+
+    if (!target) {
+      setActiveIssueId(null);
       setActiveReviewIssueId(null);
       return;
     }
 
-    setActiveReviewIssueId(match.issue.id);
+    if (target.kind === "rule") {
+      setActiveReviewIssueId(null);
+      setActiveIssueId(target.issue.id);
+      if (ruleFilter !== "all" && ruleFilter !== target.issue.ruleId) setRuleFilter("all");
+      const timer = window.setTimeout(() => {
+        if (ruleResultsPanelRef.current) ruleResultsPanelRef.current.open = true;
+        issueCardRefs.current.get(target.issue.id)?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+
+    setActiveIssueId(null);
+    setActiveReviewIssueId(target.match.issue.id);
     const timer = window.setTimeout(() => {
       if (agentReviewPanelRef.current) agentReviewPanelRef.current.open = true;
-      const reviewerCard = reviewerCardRefs.current.get(match.role);
+      const reviewerCard = reviewerCardRefs.current.get(target.match.role);
       if (reviewerCard) reviewerCard.open = true;
-      reviewIssueCardRefs.current.get(match.issue.id)?.scrollIntoView({
+      reviewIssueCardRefs.current.get(target.match.issue.id)?.scrollIntoView({
         behavior: "smooth",
         block: "center",
       });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [canvasSelectedNodeId, reviewResponse]);
+  }, [canvasSelectionRevision]);
 
   function requestScan(scope: ScanScope): void {
     setStatus("正在读取节点树...");
     setScanResult(null);
     setRuleCheck(null);
-    setNodeQuery("");
+    annotatedRuleNodeIdsRef.current.clear();
+    annotatedReviewNodeIdsRef.current.clear();
     send({ type: "SCAN_REQUEST", scope });
   }
 
@@ -355,6 +363,8 @@ export function App() {
     setReviewing(true);
     setReviewResponse(null);
     setActiveReviewIssueId(null);
+    annotatedReviewNodeIdsRef.current.clear();
+    send({ type: "CLEAR_REVIEW_ANNOTATIONS", silent: true });
     setStatus("正在并行请求三位评审角色...");
     try {
       const response = await requestReview({ scan: scanResult, rules: ruleCheck, screenshotBase64: scanResult.screenshotBase64 });
@@ -367,13 +377,18 @@ export function App() {
     }
   }
 
-  function requestLocate(nodeId: string, nodeName: string): void {
+  function requestLocate(
+    nodeId: string,
+    nodeName: string,
+  ): void {
+    suppressedReverseLocateNodeIdRef.current = nodeId;
     setStatus(`正在定位节点：${nodeName}...`);
     send({ type: "LOCATE_NODE", nodeId });
   }
 
   function requestScopeLocate(): void {
     if (!scanResult) return;
+    suppressedReverseLocateNodeIdRef.current = scanResult.rootId;
     setStatus(`正在定位评估范围：${scanResult.rootName}...`);
     send({ type: "LOCATE_SCOPE", rootId: scanResult.rootId });
   }
@@ -568,11 +583,10 @@ export function App() {
                   </div>
                 </div>
                 <div class="agent-review-list">
-                  {reviewResponse.reviews.map((review, reviewIndex) => (
+                  {reviewResponse.reviews.map((review) => (
                     <details
                       class={`agent-card agent-${review.role}`}
                       key={review.role}
-                      open={reviewIndex === 0}
                       ref={(element) => {
                         if (element) reviewerCardRefs.current.set(review.role, element);
                         else reviewerCardRefs.current.delete(review.role);
@@ -731,112 +745,141 @@ export function App() {
             </div>
       </details>
 
-      {scanResult && (
-        <>
-          <details class="node-preview panel-section">
-            <summary class="panel-summary">
-              <div>
-                <span>节点数据预览</span>
-                <strong>{scanResult.nodeCount} 个可见节点</strong>
-              </div>
-              <small>
-                {matchingNodes.length > NODE_PREVIEW_LIMIT
-                  ? `显示前 ${NODE_PREVIEW_LIMIT} 条`
-                  : `显示 ${matchingNodes.length} 条`}
-              </small>
-            </summary>
-            <div class="node-preview-body">
-              <label class="node-search">
-                <span>搜索节点</span>
-                <input
-                  type="search"
-                  value={nodeQuery}
-                  placeholder="输入名称、ID 或类型"
-                  onInput={(event) => setNodeQuery(event.currentTarget.value)}
-                />
-              </label>
-              <p class="preview-hint">
-                {matchingNodes.length > NODE_PREVIEW_LIMIT
-                  ? `为保证性能，当前显示前 ${NODE_PREVIEW_LIMIT} 条，共匹配 ${matchingNodes.length} 条。`
-                  : `当前显示 ${matchingNodes.length} 条节点数据。`}
-              </p>
-
-              <div class="node-list">
-                {previewNodes.map((node) => (
-                  <article class="node-item" key={node.id}>
+      {reviewResponse && (
+        <section class={`arbitration-panel panel-section arbitration-${reviewResponse.arbitration.status}`} aria-label="多视角关系与仲裁">
+          <header class="arbitration-heading">
+            <div>
+              <span>综合分析与仲裁</span>
+              <strong>{arbitrationStatusLabels[reviewResponse.arbitration.status]}</strong>
+            </div>
+            <div class="composite-score">
+              <small>专家综合分</small>
+              <strong>{reviewResponse.compositeScore.score ?? "—"}</strong>
+            </div>
+          </header>
+          <div class="relationship-counts">
+            <span><b>{reviewResponse.arbitration.consensus.length}</b> 项共识</span>
+            <span><b>{reviewResponse.arbitration.differences.length}</b> 项判断差异</span>
+            <span class={reviewResponse.arbitration.conflicts.length > 0 ? "has-conflict" : ""}>
+              <b>{reviewResponse.arbitration.conflicts.length}</b> 项方向冲突
+            </span>
+          </div>
+          <p class="arbitration-summary">{reviewResponse.arbitration.summary}</p>
+          {reviewResponse.arbitration.error && (
+            <p class="agent-error">仲裁错误：{reviewResponse.arbitration.error}</p>
+          )}
+          {reviewResponse.arbitration.consensus.map((consensus) => (
+            <details class="relationship-card consensus-card" key={`consensus:${consensus.id}`}>
+              <summary>
+                <span>共识</span>
+                <strong>{consensus.nodeName} · {reviewAspectLabels[consensus.aspect]}</strong>
+              </summary>
+              <button
+                type="button"
+                class="relationship-locate"
+                onClick={() => requestLocate(
+                  consensus.nodeId,
+                  consensus.nodeName,
+                )}
+              >
+                定位共识节点
+              </button>
+              <div class="relationship-opinions">
+                {consensus.issues.map((issue) => (
+                  <article key={`${consensus.id}:${issue.issueId}`}>
                     <header>
-                      <div>
-                        <strong title={node.name}>{node.name}</strong>
-                        <p class="node-id">
-                          <span>节点 ID</span>
-                          <code title={node.id}>{node.id}</code>
-                        </p>
-                      </div>
-                      <span class="node-type">{node.type}</span>
+                      <b>{reviewRoleLabels[issue.role]}</b>
+                      <em>{reviewDirectionLabels[issue.direction]}</em>
                     </header>
-                    <dl>
-                      <div class="property-row">
-                        <dt>类型</dt>
-                        <dd>{node.type}</dd>
-                      </div>
-                      <div class="property-row">
-                        <dt>尺寸</dt>
-                        <dd>宽 {node.width}px × 高 {node.height}px</dd>
-                      </div>
-                      <div class="property-row">
-                        <dt>相对位置</dt>
-                        <dd>X {node.x}px，Y {node.y}px</dd>
-                      </div>
-                      <div class="property-row">
-                        <dt>绝对位置</dt>
-                        <dd>
-                          {node.absoluteX === null || node.absoluteY === null
-                            ? "—"
-                            : `X ${node.absoluteX}px，Y ${node.absoluteY}px`}
-                        </dd>
-                      </div>
-                      <div class="property-row">
-                        <dt>纯色填充</dt>
-                        <dd class="fill-value">
-                          {node.fills[0] && (
-                            <i
-                              aria-hidden="true"
-                              style={{
-                                backgroundColor: `rgba(${node.fills[0].r * 255}, ${node.fills[0].g * 255}, ${node.fills[0].b * 255}, ${node.fills[0].a})`,
-                              }}
-                            />
-                          )}
-                          {fillLabel(node)}
-                        </dd>
-                      </div>
-                      <div class="property-row">
-                        <dt>字号</dt>
-                        <dd>{optionalNumber(node.fontSize, "px")}</dd>
-                      </div>
-                      <div class="property-row">
-                        <dt>圆角</dt>
-                        <dd>{optionalNumber(node.cornerRadius, "px")}</dd>
-                      </div>
-                      <div class="property-row relationship-row">
-                        <dt>层级关系</dt>
-                        <dd>
-                          <span>深度 {node.depth}</span>
-                          <span title={node.parentId ?? "扫描根节点"}>
-                            父节点 {node.parentId ?? "无（扫描根节点）"}
-                          </span>
-                          <span>子节点 {node.childIds.length} 个</span>
-                        </dd>
-                      </div>
-                    </dl>
+                    <strong>{issue.title}</strong>
+                    <p>{issue.suggestion}</p>
                   </article>
                 ))}
-                {previewNodes.length === 0 && <p class="empty-preview">没有匹配的节点。</p>}
               </div>
-            </div>
-          </details>
+            </details>
+          ))}
+          {reviewResponse.arbitration.differences.map((difference) => (
+            <details class="relationship-card difference-card" key={`difference:${difference.id}`}>
+              <summary>
+                <span>判断差异</span>
+                <strong>{difference.nodeName} · {reviewAspectLabels[difference.aspect]}</strong>
+              </summary>
+              <p>{difference.reason}</p>
+              <button
+                type="button"
+                class="relationship-locate"
+                onClick={() => requestLocate(
+                  difference.nodeId,
+                  difference.nodeName,
+                )}
+              >
+                定位判断差异节点
+              </button>
+              <div class="relationship-opinions">
+                {difference.issues.map((issue) => (
+                  <article key={`${difference.id}:${issue.issueId}`}>
+                    <header>
+                      <b>{reviewRoleLabels[issue.role]}</b>
+                      <em>{reviewSeverityLabels[issue.severity]}</em>
+                    </header>
+                    <strong>{issue.title}</strong>
+                    <p>{issue.suggestion}</p>
+                  </article>
+                ))}
+              </div>
+            </details>
+          ))}
+          {reviewResponse.arbitration.conflicts.map((conflict) => {
+            const decision = reviewResponse.arbitration.decisions.find((item) => item.conflictId === conflict.id);
+            return (
+              <details class="relationship-card conflict-card" key={`conflict:${conflict.id}`} open>
+                <summary>
+                  <span>方向冲突</span>
+                  <strong>{conflict.nodeName} · {reviewAspectLabels[conflict.aspect]}</strong>
+                </summary>
+                <button
+                  type="button"
+                  class="relationship-locate"
+                  onClick={() => requestLocate(
+                    conflict.nodeId,
+                    conflict.nodeName,
+                  )}
+                >
+                  定位冲突节点
+                </button>
+                <div class="relationship-opinions">
+                  {conflict.issues.map((issue) => (
+                    <article key={`${conflict.id}:${issue.issueId}`}>
+                      <header>
+                        <b>{reviewRoleLabels[issue.role]}</b>
+                        <em>{reviewDirectionLabels[issue.direction]}</em>
+                      </header>
+                      <strong>{issue.title}</strong>
+                      <p>{issue.suggestion}</p>
+                    </article>
+                  ))}
+                </div>
+                {decision && (
+                  <div class="arbitration-decision">
+                    <span>仲裁结论 · {reviewSeverityLabels[decision.priority]}</span>
+                    <strong>{decision.resolution}</strong>
+                    <p>{decision.rationale}</p>
+                  </div>
+                )}
+              </details>
+            );
+          })}
+        </section>
+      )}
 
+      {scanResult && (
+        <>
           {ruleCheck && (
-            <details class="rule-results panel-section" aria-label="自动化规则检测结果">
+            <details
+              class="rule-results panel-section"
+              aria-label="自动化规则检测结果"
+              ref={ruleResultsPanelRef}
+            >
               <summary class="rule-results-summary panel-summary">
                 <div>
                   <span>自动化规则检测</span>
@@ -849,25 +892,6 @@ export function App() {
               </summary>
 
               <div class="rule-results-content">
-
-              <section class="rule-score" aria-label="规则评分">
-                <div class="rule-score-overview">
-                  <span>规则评分</span>
-                  <strong>{ruleCheck.score === null ? "—" : `${ruleCheck.score} 分`}</strong>
-                  <small>后续综合评分占 30%</small>
-                </div>
-                <div class="rule-score-items">
-                  {ruleCheck.scoreItems.map((item) => (
-                    <div class="rule-score-item" key={item.ruleId}>
-                      <span>{ruleScoreLabels[item.ruleId]}</span>
-                      <strong>{item.score === null ? "无适用项" : `${item.score} 分`}</strong>
-                      <small>
-                        {item.checked === 0 ? "未检查到适用节点" : `${item.passed}/${item.checked} 项通过`}
-                      </small>
-                    </div>
-                  ))}
-                </div>
-              </section>
 
               {ruleCheck.issues.length > 0 && (
                 <div class="rule-filter-bar" aria-label="按规则类型筛选">

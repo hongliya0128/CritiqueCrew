@@ -75,19 +75,9 @@ export type RuleIssue = {
   expected: string;
 };
 
-export type RuleScoreItem = {
-  ruleId: RuleId;
-  checked: number;
-  passed: number;
-  failed: number;
-  score: number | null;
-};
-
 export type RuleCheckResult = {
   issues: RuleIssue[];
   skippedContrastNodes: number;
-  score: number | null;
-  scoreItems: RuleScoreItem[];
 };
 
 export type PluginMessage =
@@ -99,7 +89,7 @@ export type PluginMessage =
   | { type: "CREATE_ANNOTATIONS"; issues: RuleIssue[] }
   | { type: "CLEAR_ANNOTATIONS" }
   | { type: "CREATE_REVIEW_ANNOTATIONS"; issues: ReviewAnnotationIssue[] }
-  | { type: "CLEAR_REVIEW_ANNOTATIONS" }
+  | { type: "CLEAR_REVIEW_ANNOTATIONS"; silent?: boolean }
   | { type: "REPAIR_SELECTED_FRAME_HIERARCHY" }
   | { type: "CLOSE_PLUGIN" };
 
@@ -109,9 +99,9 @@ export type UIMessage =
   | { type: "NODE_LOCATED"; nodeId: string; nodeName: string }
   | { type: "SCOPE_LOCATED"; rootId: string; rootName: string }
   | { type: "NODE_FOCUS_CLEARED" }
-  | { type: "ANNOTATIONS_CREATED"; count: number }
+  | { type: "ANNOTATIONS_CREATED"; count: number; nodeIds: string[] }
   | { type: "ANNOTATIONS_CLEARED"; count: number }
-  | { type: "REVIEW_ANNOTATIONS_CREATED"; count: number }
+  | { type: "REVIEW_ANNOTATIONS_CREATED"; count: number; nodeIds: string[] }
   | { type: "REVIEW_ANNOTATIONS_CLEARED"; count: number }
   | { type: "HIERARCHY_REPAIRED"; movedCount: number }
   | { type: "PLUGIN_ERROR"; message: string };

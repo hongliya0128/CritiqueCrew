@@ -3,7 +3,6 @@ import type {
   RuleCheckResult,
   RuleId,
   RuleIssue,
-  RuleScoreItem,
   SolidColorSnapshot,
 } from "./messages";
 
@@ -163,27 +162,12 @@ function createIssue(
 export function checkRules(nodes: readonly NodeSnapshot[]): RuleCheckResult {
   const issues: RuleIssue[] = [];
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const scoreItems = new Map<RuleId, RuleScoreItem>([
-    ["color-contrast", { ruleId: "color-contrast", checked: 0, passed: 0, failed: 0, score: null }],
-    ["font-size", { ruleId: "font-size", checked: 0, passed: 0, failed: 0, score: null }],
-    ["target-size", { ruleId: "target-size", checked: 0, passed: 0, failed: 0, score: null }],
-  ]);
   let skippedContrastNodes = 0;
-
-  function recordCheck(ruleId: RuleId, passed: boolean): void {
-    const item = scoreItems.get(ruleId)!;
-    item.checked += 1;
-    if (passed) item.passed += 1;
-    else item.failed += 1;
-  }
 
   for (const node of nodes) {
     if (node.type === "TEXT") {
       const role = classifyTextRole(node, byId);
       const minimumFontSize = minimumFontSizeForRole(role);
-      if (minimumFontSize !== null && typeof node.fontSize === "number") {
-        recordCheck("font-size", node.fontSize >= minimumFontSize);
-      }
       if (minimumFontSize !== null && typeof node.fontSize === "number" && node.fontSize < minimumFontSize) {
         issues.push(
           createIssue(
@@ -204,7 +188,6 @@ export function checkRules(nodes: readonly NodeSnapshot[]): RuleCheckResult {
           skippedContrastNodes += 1;
         } else {
           const ratio = contrastRatio(foreground, background);
-          recordCheck("color-contrast", ratio >= WCAG_AA_CONTRAST_RATIO);
           if (ratio < WCAG_AA_CONTRAST_RATIO) {
             issues.push(
               createIssue(
@@ -220,10 +203,6 @@ export function checkRules(nodes: readonly NodeSnapshot[]): RuleCheckResult {
       }
     }
 
-    if (isInteractiveCandidate(node)) {
-      recordCheck("target-size", node.width >= MIN_TARGET_SIZE && node.height >= MIN_TARGET_SIZE);
-    }
-
     if (isInteractiveCandidate(node) && (node.width < MIN_TARGET_SIZE || node.height < MIN_TARGET_SIZE)) {
       issues.push(
         createIssue(
@@ -237,16 +216,5 @@ export function checkRules(nodes: readonly NodeSnapshot[]): RuleCheckResult {
     }
   }
 
-  const finalScoreItems = [...scoreItems.values()].map((item) => ({
-    ...item,
-    score: item.checked > 0 ? Math.round((item.passed / item.checked) * 100) : null,
-  }));
-  const applicableScores = finalScoreItems
-    .map((item) => item.score)
-    .filter((score): score is number => score !== null);
-  const score = applicableScores.length > 0
-    ? Math.round(applicableScores.reduce((total, item) => total + item, 0) / applicableScores.length)
-    : null;
-
-  return { issues, skippedContrastNodes, score, scoreItems: finalScoreItems };
+  return { issues, skippedContrastNodes };
 }

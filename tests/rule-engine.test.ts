@@ -82,12 +82,6 @@ describe("rule engine", () => {
     expect(result.issues.map((issue) => issue.nodeId)).toEqual(["caption", "caption", "save"]);
     expect(result.issues[0].expected).toContain(`${MIN_BODY_FONT_SIZE}px`);
     expect(result.issues[2].expected).toContain(`${MIN_TARGET_SIZE}px`);
-    expect(result.scoreItems).toEqual([
-      expect.objectContaining({ ruleId: "color-contrast", checked: 1, passed: 0, failed: 1, score: 0 }),
-      expect.objectContaining({ ruleId: "font-size", checked: 1, passed: 0, failed: 1, score: 0 }),
-      expect.objectContaining({ ruleId: "target-size", checked: 1, passed: 0, failed: 1, score: 0 }),
-    ]);
-    expect(result.score).toBe(0);
   });
 
   it("skips contrast only when a text node has no determinable solid background", () => {

@@ -2,6 +2,8 @@ import { z } from "zod";
 import { BailianClient, type ChatMessage } from "./bailian-client";
 import type { ServerConfig } from "./config";
 import {
+  REVIEW_ASPECTS,
+  REVIEW_DIRECTIONS,
   REVIEWER_ROLES,
   type AgentReview,
   type ReviewRequest,
@@ -13,6 +15,8 @@ import {
   REVIEW_BASIS_IDS,
   type ReviewBasisId,
 } from "../src/shared/review-basis";
+import { analyzeReviewRelationships, calculateCompositeScore } from "../src/shared/arbitration";
+import { arbitrateRelationships } from "./arbitration-service";
 
 const MAX_ROLE_ISSUES = 5;
 
@@ -27,6 +31,8 @@ const issueSchema = z.object({
   relatedNodeIds: z.array(z.string().min(1)).max(20).default([]),
   severity: z.enum(["high", "medium", "low"]),
   criterion: z.string().min(1).max(60),
+  aspect: z.enum(REVIEW_ASPECTS).default("other"),
+  direction: z.enum(REVIEW_DIRECTIONS).default("unspecified"),
   title: z.string().min(1).max(100),
   evidence: z.string().min(1).max(220),
   basisIds: z.array(z.enum(REVIEW_BASIS_IDS)).max(3).default([]),
@@ -47,6 +53,16 @@ type RoleDesign = {
   systemPrompt: string;
 };
 
+const PAGE_SEMANTICS_REVIEW_PROTOCOL = `
+在进入你的专业维度前，必须先根据截图、根节点名称、页面标题、可见文案、节点命名和重复结构理解页面语义：
+1. 识别页面所处场景、主要用户、当前阶段和最可能的核心任务；不要把页面当作无业务含义的图形集合。
+2. 找出页面的核心业务对象、重复单元和关键操作，并根据当前页面实际出现的内容归纳其中的信息角色；不要预设某个行业固定包含哪些字段。
+3. 按用户完成任务时的扫视顺序检查信息架构：用户首先要确认什么、随后比较什么、最后执行什么；判断视觉顺序、空间分组和语义关系是否支持这一过程。
+4. 当页面语义可以由标题、文案、组件结构等多个明确线索共同支持时，应按推断出的场景主动检查核心对象是否清楚、信息是否便于理解和比较、关键操作是否符合任务顺序，而不只检查字体和间距。
+5. 严格区分三类判断：截图或节点可确认的事实、由多个页面线索支持的高可信语义推断、依赖未提供产品需求的假设。前两类可以形成问题；第三类只能写成有条件的优化建议，不得把个人偏好写成确定缺陷。
+6. 不要预设某一种固定版式、内容字段或组件形态是唯一答案。只有输入能够证明某项内容是任务必需时，才能把它的缺失判为确定问题；否则应围绕当前结构造成的实际影响给出有条件的优化建议。
+`.trim();
+
 export const ROLE_DESIGNS: Record<ReviewerRole, RoleDesign> = {
   visual: {
     label: "视觉设计师",
@@ -54,11 +70,13 @@ export const ROLE_DESIGNS: Record<ReviewerRole, RoleDesign> = {
     systemPrompt: `
 你是 CritiqueCrew 的资深视觉设计师。你必须独立评审设计，不要充当 WCAG 规则检查器。
 
+${PAGE_SEMANTICS_REVIEW_PROTOCOL}
+
 只从视觉设计专业角度判断：
-1. 信息层级：主次是否一眼可辨，视觉焦点是否符合任务优先级；
+1. 信息层级：主次是否一眼可辨，视觉焦点是否符合任务优先级；对于重复内容单元，必须根据页面语义检查核心对象、关键属性、状态、辅助信息与操作入口的视觉权重和阅读顺序；
 2. 留白与布局：间距、对齐、密度、分组关系是否形成稳定节奏；
 3. 一致性：字体、颜色、圆角、组件形态和重复模式是否统一；
-4. 视觉节奏：页面是否拥挤、单调或失衡，阅读路径是否自然。
+4. 视觉节奏：页面是否拥挤、单调或失衡，阅读路径是否自然；重复条目能否让用户快速纵向比较同类信息。
 
 禁止逐条复述字号、对比度、44px 等自动化规则结果。只有当它们造成明显视觉层级或节奏问题时，才可从视觉角度合并为一个问题。
 最多给出 5 个最重要、彼此不重复的问题；同类节点必须合并，不要逐节点列举。
@@ -71,11 +89,13 @@ export const ROLE_DESIGNS: Record<ReviewerRole, RoleDesign> = {
     systemPrompt: `
 你是 CritiqueCrew 的无障碍与可访问性专家。你需要独立判断，不是自动化规则的复读器。
 
+${PAGE_SEMANTICS_REVIEW_PROTOCOL}
+
 从更完整的可访问性角度评审：
 1. 感知性：信息是否只依赖颜色、文字与背景是否易读、状态是否可辨；
-2. 可理解性：标签、提示、错误信息、文案与信息结构是否清楚；
+2. 可理解性：标签、提示、错误信息、文案与信息结构是否清楚；列表项中的身份、时间、状态与操作是否容易建立语义关联；
 3. 可操作性：目标是否易点击、操作控件是否可识别、关键任务是否有替代线索；
-4. 包容性：低视力、色觉差异、认知负担和不同使用情境下的风险。
+4. 包容性：低视力、色觉差异、认知负担和不同使用情境下的风险；重复卡片是否支持快速识别与比较，而不要求用户反复回读。
 
 自动化规则仅作为证据线索，不得逐条照抄。相同原因的字号或对比度问题必须合并，并说明它对用户完成任务的真实影响。
 至少优先寻找一项自动规则无法覆盖的语义层问题；最多给出 5 个最重要、彼此不重复的问题。
@@ -88,10 +108,12 @@ export const ROLE_DESIGNS: Record<ReviewerRole, RoleDesign> = {
     systemPrompt: `
 你是 CritiqueCrew 的资深交互设计师。你必须独立评审用户如何理解并完成任务。
 
+${PAGE_SEMANTICS_REVIEW_PROTOCOL}
+
 只从交互设计角度判断：
-1. 操作路径：主任务入口、步骤顺序和下一步行动是否明确；
+1. 操作路径：主任务入口、步骤顺序和下一步行动是否明确；先判断用户在当前场景中是查看、比较、选择还是管理，再检查界面是否支持这一任务；
 2. 反馈明确性：点击、提交、加载、成功、失败是否有及时反馈；
-3. 状态可见性：可选、已选、禁用、进行中、完成等状态是否可区分；
+3. 状态可见性：可选、已选、禁用、进行中、完成等状态是否可区分；在重复列表中，状态是否放在容易扫视的位置并与对应对象明确关联；
 4. 误操作风险：危险操作、不可逆操作、歧义按钮、误触和恢复路径是否合理。
 
 不要报告纯粹的字号、颜色对比度或静态排版问题，除非它直接导致操作入口不可发现或状态不可辨。
@@ -106,8 +128,9 @@ function mockReview(role: ReviewerRole, request: ReviewRequest, latencyMs: numbe
   const roleDesign = ROLE_DESIGNS[role];
   const firstRuleIssue = request.rules.issues[0];
   const firstNode = request.scan.nodes.find((node) => node.type === "TEXT") ?? request.scan.nodes[0];
-  const nodeInfo = firstNode
-    ? { nodeId: firstNode.id, nodeName: firstNode.name, relatedNodes: [] }
+  const conflictNode = request.scan.nodes.find((node) => node.hasPointerInteraction) ?? firstNode;
+  const conflictNodeInfo = conflictNode
+    ? { nodeId: conflictNode.id, nodeName: conflictNode.name, relatedNodes: [] }
     : { nodeId: null, nodeName: null, relatedNodes: [] };
   const copies: Record<ReviewerRole, Pick<AgentReview, "score" | "dimensions" | "summary" | "issues">> = {
     visual: {
@@ -119,13 +142,14 @@ function mockReview(role: ReviewerRole, request: ReviewRequest, latencyMs: numbe
         { label: "视觉节奏", score: 80, observation: "内容密度前紧后松，阅读路径不够连续。" },
       ],
       summary: "主次关系基本成立，但关键操作与辅助信息之间的视觉差异仍可加强。",
-      issues: firstNode ? [{
-        id: "visual-1", ...nodeInfo, severity: "medium", criterion: "信息层级",
-        title: "关键内容的视觉优先级不够突出",
-        evidence: "截图中关键内容与周围辅助信息的字号、字重差异较小；节点数据也显示主要文本未形成明确的层级区分。",
+      issues: conflictNode ? [{
+        id: "visual-1", ...conflictNodeInfo, severity: "medium", criterion: "信息层级",
+        aspect: "visual-prominence", direction: "weaken",
+        title: "次要操作入口的视觉权重过强",
+        evidence: "该操作入口与页面主要内容形成竞争，削弱了主任务的信息层级。",
         basisIds: ["APPLE-DESIGN-TIPS"],
-        explanation: "当前字号、字重与周围内容差异较小，用户需要额外阅读才能确认主要信息。",
-        suggestion: "提高关键内容的字重或尺寸，并增加其与辅助信息之间的留白。",
+        explanation: "次要入口过度突出会分散用户注意力，使页面主任务不够集中。",
+        suggestion: "降低该入口的颜色强度或视觉重量，让主内容获得更明确的优先级。",
       }] : [],
     },
     accessibility: {
@@ -144,6 +168,8 @@ function mockReview(role: ReviewerRole, request: ReviewRequest, latencyMs: numbe
         relatedNodes: [],
         severity: "high",
         criterion: "感知性",
+        aspect: "readability",
+        direction: "strengthen",
         title: "关键信息对低视力用户不够友好",
         evidence: `自动检测在节点 ${firstRuleIssue.nodeName} 上发现 ${firstRuleIssue.actual}，低于当前项目的预期 ${firstRuleIssue.expected}。`,
         basisIds: firstRuleIssue.ruleId === "color-contrast"
@@ -164,14 +190,15 @@ function mockReview(role: ReviewerRole, request: ReviewRequest, latencyMs: numbe
         { label: "误操作防护", score: 82, observation: "未见明显危险操作，但恢复路径信息有限。" },
       ],
       summary: "主要操作入口可以识别，但关键操作后的状态反馈不够完整。",
-      issues: [{
-        id: "interaction-1", nodeId: null, nodeName: null, relatedNodes: [], severity: "medium", criterion: "反馈明确性",
-        title: "关键操作缺少完成与失败反馈",
-        evidence: "当前静态设计稿未呈现关键操作后的加载、成功或失败状态，也未提供失败后的恢复入口。",
-        basisIds: ["NNG-VISIBILITY-OF-STATUS", "NNG-ERROR-PREVENTION"],
-        explanation: "界面未呈现提交后的加载、成功或失败状态，用户可能重复操作。",
-        suggestion: "为提交过程增加进行中、成功和失败三种状态，并在失败时提供重试入口。",
-      }],
+      issues: conflictNode ? [{
+        id: "interaction-1", ...conflictNodeInfo, severity: "high", criterion: "操作路径",
+        aspect: "visual-prominence", direction: "strengthen",
+        title: "关键操作入口不够醒目",
+        evidence: "该入口承担主要操作路径，但当前视觉呈现不足以让用户快速发现下一步行动。",
+        basisIds: ["NNG-VISIBILITY-OF-STATUS"],
+        explanation: "入口不够醒目会降低任务可发现性，用户可能无法确认下一步操作。",
+        suggestion: "增强该入口的颜色对比或视觉重量，使其在当前任务路径中更容易被发现。",
+      }] : [],
     },
   };
   return {
@@ -235,9 +262,7 @@ function verticalGapEvidence(request: ReviewRequest) {
 
 function roleContext(role: ReviewerRole, request: ReviewRequest) {
   const ruleSummary = {
-    score: request.rules.score,
     issueCount: request.rules.issues.length,
-    scoreItems: request.rules.scoreItems,
   };
   return role === "accessibility"
     ? { ruleSummary, automatedRuleSignals: request.rules.issues.slice(0, 12) }
@@ -282,6 +307,8 @@ export function buildReviewMessages(role: ReviewerRole, request: ReviewRequest):
     "relatedNodeIds": ["最多3个关联节点ID，必须来自输入节点"],
     "severity": "high|medium|low",
     "criterion": "所属专业维度",
+    "aspect": "visual-prominence|information-density|readability|interaction-entry|status-feedback|error-prevention|other",
+    "direction": "strengthen|weaken|add|remove|retain|restructure|unspecified",
     "title": "一句话具体问题",
     "evidence": "30至60字：从截图或节点数据观察到的具体事实，不得把推测写成事实",
     "basisIds": ["仅在来源与问题直接相关时，从 allowedReviewBases 选择 1 至 3 个编号；没有直接对应来源时必须返回空数组"],
@@ -290,6 +317,7 @@ export function buildReviewMessages(role: ReviewerRole, request: ReviewRequest):
   }]
 }
 不要输出 Markdown，不要虚构节点 ID，不要重复同类问题，也不要编造标准、出处或依据编号。
+aspect 表示问题实际涉及的设计属性；direction 表示建议对该属性采取的动作。无法归类时使用 other 或 unspecified，不得为了制造冲突而强行选择方向。
 每个问题必须给出可从输入中核对的 evidence。basisIds 是相关参考而非唯一评审来源：只有来源内容能够直接支持该问题时才引用；不得为了让问题显得权威而强行匹配来源，没有直接对应来源时返回空数组。
 文字必须短而明确：先说结论，删除背景铺垫、重复解释和泛泛建议；evidence、explanation、suggestion 均不得超过两句话。
 只有 kind 为 standard 的依据可以表述为“未满足该标准”，且必须有足够的静态证据；kind 为 guideline 或 heuristic 时，只能表述为“设计建议”或“潜在风险”，不得宣称不合规。
@@ -336,6 +364,8 @@ function parseModelReview(role: ReviewerRole, content: string, request: ReviewRe
           .map((nodeId) => ({ nodeId, nodeName: nodesById.get(nodeId)?.name ?? "未命名节点" })),
         severity: issue.severity,
         criterion: issue.criterion,
+        aspect: issue.aspect,
+        direction: issue.direction,
         title: issue.title,
         evidence: issue.evidence,
         basisIds: issue.basisIds as ReviewBasisId[],
@@ -408,9 +438,20 @@ export class ReviewService {
         };
       }
     }));
+    const relationships = analyzeReviewRelationships(reviews);
+    const successfulReviewerCount = reviews.filter((review) => review.status === "completed").length;
+    const arbitration = await arbitrateRelationships(
+      this.config,
+      this.client,
+      relationships,
+      successfulReviewerCount,
+    );
+    const compositeScore = calculateCompositeScore(reviews);
     return {
       reviews,
-      incomplete: reviews.some((review) => review.status === "failed"),
+      arbitration,
+      compositeScore,
+      incomplete: reviews.some((review) => review.status === "failed") || arbitration.status === "failed",
       elapsedMs: Date.now() - startedAt,
       mock: this.config.mockMode,
     };

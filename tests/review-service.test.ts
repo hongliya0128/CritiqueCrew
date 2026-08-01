@@ -16,7 +16,7 @@ const reviewRequest: ReviewRequest = {
       { id: "nav-1", parentId: "frame-1", childIds: [], name: "Bottom navigation", type: "FRAME", depth: 1, visible: true, locked: false, x: 0, y: 200, absoluteX: 0, absoluteY: 200, width: 320, height: 40, rotation: 0, opacity: 1, fills: [], fillKind: "none", hasPointerInteraction: true, fontSize: null, characters: null, cornerRadius: 12 },
     ],
   },
-  rules: { issues: [{ id: "font-size:text-1", ruleId: "font-size", severity: "error", nodeId: "text-1", nodeName: "Small copy", nodeType: "TEXT", message: "Text is too small", actual: "12px", expected: "14px" }], skippedContrastNodes: 0, score: 60, scoreItems: [] },
+  rules: { issues: [{ id: "font-size:text-1", ruleId: "font-size", severity: "error", nodeId: "text-1", nodeName: "Small copy", nodeType: "TEXT", message: "Text is too small", actual: "12px", expected: "14px" }], skippedContrastNodes: 0 },
 };
 
 describe("ReviewService", () => {
@@ -28,6 +28,10 @@ describe("ReviewService", () => {
     expect(response.reviews.map((review) => review.role)).toEqual(["visual", "accessibility", "interaction"]);
     expect(response.reviews.every((review) => review.status === "completed")).toBe(true);
     expect(response.reviews.find((review) => review.role === "accessibility")?.issues[0]?.nodeId).toBe("text-1");
+    expect(response.arbitration.status).toBe("completed");
+    expect(response.arbitration.conflicts).toHaveLength(1);
+    expect(response.arbitration.decisions).toHaveLength(1);
+    expect(response.compositeScore.score).toBe(73);
   });
 
   it("builds genuinely distinct role prompts and only gives detailed rule signals to accessibility", () => {
@@ -40,6 +44,14 @@ describe("ReviewService", () => {
     expect(ROLE_DESIGNS.visual.systemPrompt).toContain("视觉节奏");
     expect(ROLE_DESIGNS.accessibility.systemPrompt).toContain("语义层问题");
     expect(ROLE_DESIGNS.interaction.systemPrompt).toContain("误操作风险");
+    expect(ROLE_DESIGNS.visual.systemPrompt).toContain("识别页面所处场景");
+    expect(ROLE_DESIGNS.visual.systemPrompt).toContain("核心对象、关键属性、状态");
+    expect(ROLE_DESIGNS.accessibility.systemPrompt).toContain("建立语义关联");
+    expect(ROLE_DESIGNS.interaction.systemPrompt).toContain("查看、比较、选择还是管理");
+    expect(ROLE_DESIGNS.visual.systemPrompt).toContain("不要预设某一种固定版式、内容字段或组件形态");
+    expect(ROLE_DESIGNS.visual.systemPrompt).not.toContain("预约");
+    expect(ROLE_DESIGNS.visual.systemPrompt).not.toContain("医生");
+    expect(ROLE_DESIGNS.visual.systemPrompt).not.toContain("头像");
     expect(visual).not.toContain("Text is too small");
     expect(interaction).not.toContain("Text is too small");
     expect(accessibility).toContain("Text is too small");
@@ -48,6 +60,8 @@ describe("ReviewService", () => {
     expect(visualInput).toContain('"verticalGap":180');
     expect(visual).toContain("低于 85 分");
     expect(visual).toContain("primaryNodeId");
+    expect(visual).toContain('\\"aspect\\"');
+    expect(visual).toContain('\\"direction\\"');
     expect(visual).toContain("from 节点");
     expect(visual).toContain("relatedNodeIds 非空时也必须提供 primaryNodeId");
     expect(visual).toContain("APPLE-DESIGN-TIPS");

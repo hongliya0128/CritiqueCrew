@@ -169,7 +169,8 @@ async function attachScreenshot(result: import("../shared/messages").ScanResult)
   if (result.scope !== "selection") return;
   const node = await figma.getNodeByIdAsync(result.rootId);
   if (!node || !isSceneNode(node) || !("exportAsync" in node)) return;
-  const bytes = await node.exportAsync({ format: "PNG", constraint: { type: "WIDTH", value: 1600 } });
+  // 1200px is sufficient for the mobile and panel-sized UI fixtures while reducing multimodal upload and inference time.
+  const bytes = await node.exportAsync({ format: "PNG", constraint: { type: "WIDTH", value: 1200 } });
   // Keep the JSON request below the local proxy limit; text-only review remains available for larger canvases.
   if (bytes.byteLength <= 3 * 1024 * 1024) result.screenshotBase64 = bytesToBase64(bytes);
 }
@@ -204,9 +205,10 @@ function annotationColor(severity: RuleIssue["severity"]): RGB {
   return severity === "error" ? { r: 0.88, g: 0.18, b: 0.24 } : { r: 0.93, g: 0.56, b: 0.04 };
 }
 
-async function createAnnotations(issues: readonly RuleIssue[]): Promise<number> {
+async function createAnnotations(issues: readonly RuleIssue[]): Promise<string[]> {
   clearAnnotations("rule");
   const markers: RectangleNode[] = [];
+  const annotatedNodeIds: string[] = [];
   const seenNodeIds = new Set<string>();
 
   for (const issue of issues) {
@@ -228,16 +230,17 @@ async function createAnnotations(issues: readonly RuleIssue[]): Promise<number> 
     marker.cornerRadius = 4;
     marker.locked = true;
     markers.push(marker);
+    annotatedNodeIds.push(issue.nodeId);
   }
 
-  if (markers.length === 0) return 0;
+  if (markers.length === 0) return [];
 
   const group = figma.group(markers, figma.currentPage);
   group.name = "CritiqueCrew · 规则问题标注（可清除）";
   group.setPluginData(ANNOTATION_ROOT_KEY, "true");
   group.setPluginData(ANNOTATION_SOURCE_KEY, "rule");
   group.locked = true;
-  return markers.length;
+  return annotatedNodeIds;
 }
 
 function reviewSeverityColor(severity: ReviewSeverity): RGB {
@@ -248,7 +251,7 @@ function reviewSeverityColor(severity: ReviewSeverity): RGB {
 
 async function createReviewAnnotations(
   issues: Parameters<typeof aggregateReviewAnnotations>[0],
-): Promise<number> {
+): Promise<string[]> {
   const targets = aggregateReviewAnnotations(issues);
   const resolvedTargets: Array<{
     target: (typeof targets)[number];
@@ -261,7 +264,7 @@ async function createReviewAnnotations(
     resolvedTargets.push({ target, node });
   }
 
-  if (resolvedTargets.length === 0) return 0;
+  if (resolvedTargets.length === 0) return [];
 
   let targetPage: PageNode | null = resolvedTargets[0].node.parent?.type === "PAGE"
     ? resolvedTargets[0].node.parent
@@ -297,7 +300,7 @@ async function createReviewAnnotations(
   group.setPluginData(ANNOTATION_ROOT_KEY, "true");
   group.setPluginData(ANNOTATION_SOURCE_KEY, "review");
   group.locked = true;
-  return resolvedTargets.length;
+  return resolvedTargets.map(({ target }) => target.nodeId);
 }
 
 figma.on("selectionchange", sendSelection);
@@ -347,8 +350,8 @@ figma.ui.onmessage = async (message: PluginMessage) => {
       break;
     case "CREATE_ANNOTATIONS":
       try {
-        const count = await createAnnotations(message.issues);
-        post({ type: "ANNOTATIONS_CREATED", count });
+        const nodeIds = await createAnnotations(message.issues);
+        post({ type: "ANNOTATIONS_CREATED", count: nodeIds.length, nodeIds });
       } catch (error) {
         post({
           type: "PLUGIN_ERROR",
@@ -361,8 +364,8 @@ figma.ui.onmessage = async (message: PluginMessage) => {
       break;
     case "CREATE_REVIEW_ANNOTATIONS":
       try {
-        const count = await createReviewAnnotations(message.issues);
-        post({ type: "REVIEW_ANNOTATIONS_CREATED", count });
+        const nodeIds = await createReviewAnnotations(message.issues);
+        post({ type: "REVIEW_ANNOTATIONS_CREATED", count: nodeIds.length, nodeIds });
       } catch (error) {
         post({
           type: "PLUGIN_ERROR",
@@ -371,7 +374,10 @@ figma.ui.onmessage = async (message: PluginMessage) => {
       }
       break;
     case "CLEAR_REVIEW_ANNOTATIONS":
-      post({ type: "REVIEW_ANNOTATIONS_CLEARED", count: clearAnnotations("review") });
+      {
+        const count = clearAnnotations("review");
+        if (!message.silent) post({ type: "REVIEW_ANNOTATIONS_CLEARED", count });
+      }
       break;
     case "REPAIR_SELECTED_FRAME_HIERARCHY":
       try {
