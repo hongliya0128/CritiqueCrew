@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyzeReviewRelationships, calculateCompositeScore } from "../src/shared/arbitration";
-import { buildArbitrationMessages } from "../server/arbitration-service";
+import { buildCoordinationMessages } from "../server/coordination-service";
 import type {
   AgentReview,
   ReviewDirection,
@@ -48,10 +48,11 @@ function review(role: ReviewerRole, issues: ReviewIssue[], score = 80): AgentRev
 
 describe("analyzeReviewRelationships", () => {
   it("treats mutually exclusive directions on the same node and aspect as a conflict", () => {
-    const result = analyzeReviewRelationships([
+    const reviews = [
       review("visual", [issue("visual-1", "medium", "weaken")]),
       review("interaction", [issue("interaction-1", "high", "strengthen")]),
-    ]);
+    ];
+    const result = analyzeReviewRelationships(reviews);
 
     expect(result.conflicts).toHaveLength(1);
     expect(result.conflicts[0]).toMatchObject({
@@ -59,24 +60,46 @@ describe("analyzeReviewRelationships", () => {
       aspect: "visual-prominence",
     });
     expect(result.consensus).toHaveLength(0);
-    const messages = JSON.stringify(buildArbitrationMessages(result.conflicts));
+    const messages = JSON.stringify(buildCoordinationMessages(reviews, result, calculateCompositeScore(reviews)));
     expect(messages).toContain("测试证据");
     expect(messages).toContain("测试说明");
-    expect(messages).toContain("不得把 suggestion 当作事实证据");
-    expect(messages).toContain("resolution 和 rationale 必须分别控制在 240 个字符以内");
-    expect(messages).toContain("最终建议或折中方案，不超过240个字符");
-    expect(messages).toContain("为什么这样判断，不超过240个字符");
+    expect(messages).toContain("不得把 suggestion 当作事实");
+    expect(messages).toContain("overallSummary");
+    expect(messages).toContain("perspectives");
+    expect(messages).toContain("tradeoffs");
+    expect(messages).toContain("视觉设计师概括视觉层级和版式表现");
+    expect(messages).toContain("无障碍专家概括内容理解和包容性风险");
+    expect(messages).toContain("交互设计师概括任务路径、反馈和误操作风险");
+    expect(messages).toContain("不再从视觉、无障碍、交互三个方面逐项复述");
+    expect(messages).toContain("每条只写一句话，建议 25 至 50 个字符");
+    expect(messages).toContain("保留该专家原本的判断重点和表达顺序");
+    expect(messages).toContain("三条不得套用相同的转折结构");
+    expect(messages).toContain("优先使用“整体……”或“综合来看，……”");
+    expect(messages).toContain("输入中的英文术语必须先改写成通俗中文");
+    expect(messages).toContain("不得向用户提出需要回复的问题");
+    expect(messages).toContain("不是替用户裁决的仲裁者");
   });
 
-  it("keeps matching recommendations as consensus and records a two-level severity difference", () => {
+  it("classifies matching directions with a two-level severity gap only as a judgment difference", () => {
     const result = analyzeReviewRelationships([
       review("visual", [issue("visual-1", "low", "strengthen")]),
       review("interaction", [issue("interaction-1", "high", "strengthen")]),
     ]);
 
     expect(result.conflicts).toHaveLength(0);
-    expect(result.consensus).toHaveLength(1);
+    expect(result.consensus).toHaveLength(0);
     expect(result.differences).toHaveLength(1);
+  });
+
+  it("classifies matching directions with a small severity gap only as consensus", () => {
+    const result = analyzeReviewRelationships([
+      review("visual", [issue("visual-1", "medium", "strengthen")]),
+      review("interaction", [issue("interaction-1", "high", "strengthen")]),
+    ]);
+
+    expect(result.conflicts).toHaveLength(0);
+    expect(result.consensus).toHaveLength(1);
+    expect(result.differences).toHaveLength(0);
   });
 
   it("does not infer disagreement from another role staying silent", () => {

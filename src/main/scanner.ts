@@ -20,6 +20,7 @@ const selectableRootTypes = new Set<SceneNode["type"]>([
   "COMPONENT",
   "INSTANCE",
   "SECTION",
+  "GROUP",
 ]);
 
 export function isSupportedSelectionRoot(node: SceneNode): boolean {
@@ -163,7 +164,7 @@ export function scanScope(scope: ScanScope): ScanResult {
   if (scope === "selection") {
     const selection = figma.currentPage.selection;
     if (selection.length !== 1 || !isSupportedSelectionRoot(selection[0])) {
-      throw new Error("请选择一个 Frame、Component、Instance 或 Section 后再扫描。");
+      throw new Error("请选择一个扫描范围（支持 Frame、Component、Instance、Section、Group）后再扫描。");
     }
     roots = selection;
     rootId = selection[0].id;

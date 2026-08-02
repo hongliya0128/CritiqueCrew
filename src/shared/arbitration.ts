@@ -94,6 +94,21 @@ export function analyzeReviewRelationships(reviews: readonly AgentReview[]): {
     }
 
     const uniqueDirections = new Set(directions);
+    const ranks = group.map((item) => severityRank[item.issue.severity]);
+    const hasLargeSeverityGap = Math.max(...ranks) - Math.min(...ranks) >= 2;
+
+    if (uniqueDirections.size === 1 && hasLargeSeverityGap) {
+      differences.push({
+        id,
+        nodeId: first.nodeId!,
+        nodeName: first.nodeName ?? first.nodeId!,
+        aspect: first.aspect,
+        reason: "角色认同同一问题和修改方向，但对严重程度的判断相差两档。",
+        issues: issueReferences,
+      });
+      continue;
+    }
+
     if (uniqueDirections.size === 1) {
       consensus.push({
         id,
@@ -101,18 +116,6 @@ export function analyzeReviewRelationships(reviews: readonly AgentReview[]): {
         nodeName: first.nodeName ?? first.nodeId!,
         aspect: first.aspect,
         direction: directions[0],
-        issues: issueReferences,
-      });
-    }
-
-    const ranks = group.map((item) => severityRank[item.issue.severity]);
-    if (Math.max(...ranks) - Math.min(...ranks) >= 2) {
-      differences.push({
-        id,
-        nodeId: first.nodeId!,
-        nodeName: first.nodeName ?? first.nodeId!,
-        aspect: first.aspect,
-        reason: "角色对问题严重程度的判断相差两档；这属于判断差异，不等同于方向冲突。",
         issues: issueReferences,
       });
     }

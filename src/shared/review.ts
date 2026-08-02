@@ -83,21 +83,27 @@ export type ReviewConflict = {
   issues: ReviewIssueReference[];
 };
 
-export type ArbitrationDecision = {
+export type ReviewTradeoff = {
   conflictId: string;
-  priority: ReviewSeverity;
-  resolution: string;
-  rationale: string;
-  preferredIssueIds: string[];
+  topic: string;
+  tradeoffSummary: string;
+  coordinatedSuggestion: string;
+  unresolvedNote: string;
 };
 
-export type ArbitrationResult = {
-  status: "not-needed" | "completed" | "failed" | "skipped";
+export type CoordinationPerspective = {
+  role: ReviewerRole;
+  summary: string;
+};
+
+export type CoordinationResult = {
+  status: "completed" | "failed" | "skipped";
   consensus: ReviewConsensus[];
   differences: ReviewDifference[];
   conflicts: ReviewConflict[];
-  decisions: ArbitrationDecision[];
-  summary: string;
+  perspectives: CoordinationPerspective[];
+  tradeoffs: ReviewTradeoff[];
+  overallSummary: string;
   latencyMs: number;
   error: string | null;
 };
@@ -143,7 +149,7 @@ export type ReviewRequest = {
 
 export type ReviewResponse = {
   reviews: AgentReview[];
-  arbitration: ArbitrationResult;
+  coordination: CoordinationResult;
   compositeScore: CompositeScore;
   incomplete: boolean;
   elapsedMs: number;

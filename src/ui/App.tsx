@@ -4,6 +4,12 @@ import {
   type ReviewAnnotationIssue,
 } from "../shared/annotations";
 import type { HealthResponse } from "../shared/health";
+import {
+  buildEvaluationReport,
+  createReportFilename,
+  serializeReport,
+  type ReportFormat,
+} from "../shared/report-export";
 import type { ReviewAspect, ReviewDirection, ReviewerRole, ReviewResponse } from "../shared/review";
 import { getReviewBasis } from "../shared/review-basis";
 import type {
@@ -53,6 +59,12 @@ const reviewRoleShortLabels = {
   interaction: "交互",
 } as const;
 
+const coordinationPerspectiveLabels = {
+  visual: "视觉设计",
+  accessibility: "无障碍",
+  interaction: "交互流程",
+} as const;
+
 const reviewSeverityLabels = {
   high: "高优先级",
   medium: "中优先级",
@@ -78,13 +90,6 @@ const reviewDirectionLabels: Record<ReviewDirection, string> = {
   restructure: "重构",
   unspecified: "未指定",
 };
-
-const arbitrationStatusLabels = {
-  completed: "仲裁完成",
-  "not-needed": "无需仲裁",
-  failed: "仲裁失败",
-  skipped: "已跳过",
-} as const;
 
 export function App() {
   const [selection, setSelection] = useState(emptySelection);
@@ -175,16 +180,16 @@ export function App() {
           : selection.canScanSelection
             ? {
                 stage: "下一步 · 扫描",
-                message: `已选择「${selection.names[0] ?? "当前 Frame"}」，点击下方按钮开始扫描。`,
+                message: `已选择「${selection.names[0] ?? "当前范围"}」，点击下方按钮开始扫描。`,
               }
             : selection.count > 0
               ? {
                   stage: "调整选择",
-                  message: "请选择一个 Frame、Component、Instance 或 Section。",
+                  message: "请选择一个扫描范围（支持 Frame、Component、Instance、Section、Group）。",
                 }
               : {
                   stage: "第一步 · 选择范围",
-                  message: "先在 Figma 画布中选择一个需要评估的 Frame。",
+                  message: "先在 Figma 画布中选择一个需要评估的范围（支持 Frame、Component、Instance、Section、Group）。",
                 };
 
   useEffect(() => {
@@ -417,6 +422,26 @@ export function App() {
     send({ type: "CREATE_REVIEW_ANNOTATIONS", issues: reviewAnnotationIssues });
   }
 
+  function downloadEvaluationReport(format: ReportFormat): void {
+    if (!scanResult || !ruleCheck || !reviewResponse) return;
+    const generatedAt = new Date().toISOString();
+    const report = buildEvaluationReport(scanResult, ruleCheck, reviewResponse, generatedAt);
+    const content = serializeReport(report, format);
+    const blob = new Blob([content], {
+      type: format === "json" ? "application/json;charset=utf-8" : "text/markdown;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = createReportFilename(scanResult.rootName, format, generatedAt);
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    setStatus(`已导出 ${format === "json" ? "JSON" : "Markdown"} 评估报告。`);
+  }
+
   return (
     <main class="app-shell">
       <header class="app-header">
@@ -466,8 +491,8 @@ export function App() {
           </div>
           <strong>
             {selection.canScanSelection
-              ? `扫描 ${selection.names[0] ?? "当前 Frame"}`
-              : "请先选择一个 Frame"}
+              ? `扫描 ${selection.names[0] ?? "当前范围"}`
+              : "请先选择扫描范围"}
           </strong>
         </div>
         <button
@@ -746,29 +771,41 @@ export function App() {
       </details>
 
       {reviewResponse && (
-        <section class={`arbitration-panel panel-section arbitration-${reviewResponse.arbitration.status}`} aria-label="多视角关系与仲裁">
-          <header class="arbitration-heading">
+        <details class={`coordination-panel panel-section coordination-${reviewResponse.coordination.status}`} aria-label="评审协调者总体评价">
+          <summary class="coordination-heading">
             <div>
-              <span>综合分析与仲裁</span>
-              <strong>{arbitrationStatusLabels[reviewResponse.arbitration.status]}</strong>
+              <span>评审协调者</span>
+              <strong>总体评价</strong>
             </div>
             <div class="composite-score">
               <small>专家综合分</small>
               <strong>{reviewResponse.compositeScore.score ?? "—"}</strong>
             </div>
-          </header>
+          </summary>
+          <div class="coordination-overview">
+            {reviewResponse.coordination.perspectives.length > 0 && (
+              <ul class="coordination-perspectives">
+                {reviewResponse.coordination.perspectives.map((perspective) => (
+                  <li class={`perspective-${perspective.role}`} key={perspective.role}>
+                    <strong>{coordinationPerspectiveLabels[perspective.role]}</strong>
+                    <span>{perspective.summary}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p class="coordination-conclusion">{reviewResponse.coordination.overallSummary}</p>
+          </div>
           <div class="relationship-counts">
-            <span><b>{reviewResponse.arbitration.consensus.length}</b> 项共识</span>
-            <span><b>{reviewResponse.arbitration.differences.length}</b> 项判断差异</span>
-            <span class={reviewResponse.arbitration.conflicts.length > 0 ? "has-conflict" : ""}>
-              <b>{reviewResponse.arbitration.conflicts.length}</b> 项方向冲突
+            <span><b>{reviewResponse.coordination.consensus.length}</b> 项共识</span>
+            <span><b>{reviewResponse.coordination.differences.length}</b> 项判断差异</span>
+            <span class={reviewResponse.coordination.conflicts.length > 0 ? "has-conflict" : ""}>
+              <b>{reviewResponse.coordination.conflicts.length}</b> 项方向分歧
             </span>
           </div>
-          <p class="arbitration-summary">{reviewResponse.arbitration.summary}</p>
-          {reviewResponse.arbitration.error && (
-            <p class="agent-error">仲裁错误：{reviewResponse.arbitration.error}</p>
+          {reviewResponse.coordination.error && (
+            <p class="agent-error">综合错误：{reviewResponse.coordination.error}</p>
           )}
-          {reviewResponse.arbitration.consensus.map((consensus) => (
+          {reviewResponse.coordination.consensus.map((consensus) => (
             <details class="relationship-card consensus-card" key={`consensus:${consensus.id}`}>
               <summary>
                 <span>共识</span>
@@ -798,7 +835,7 @@ export function App() {
               </div>
             </details>
           ))}
-          {reviewResponse.arbitration.differences.map((difference) => (
+          {reviewResponse.coordination.differences.map((difference) => (
             <details class="relationship-card difference-card" key={`difference:${difference.id}`}>
               <summary>
                 <span>判断差异</span>
@@ -829,13 +866,13 @@ export function App() {
               </div>
             </details>
           ))}
-          {reviewResponse.arbitration.conflicts.map((conflict) => {
-            const decision = reviewResponse.arbitration.decisions.find((item) => item.conflictId === conflict.id);
+          {reviewResponse.coordination.conflicts.map((conflict) => {
+            const tradeoff = reviewResponse.coordination.tradeoffs.find((item) => item.conflictId === conflict.id);
             return (
               <details class="relationship-card conflict-card" key={`conflict:${conflict.id}`} open>
                 <summary>
-                  <span>方向冲突</span>
-                  <strong>{conflict.nodeName} · {reviewAspectLabels[conflict.aspect]}</strong>
+                  <span>方向分歧</span>
+                  <strong>{tradeoff?.topic ?? `${conflict.nodeName} · ${reviewAspectLabels[conflict.aspect]}`}</strong>
                 </summary>
                 <button
                   type="button"
@@ -845,7 +882,7 @@ export function App() {
                     conflict.nodeName,
                   )}
                 >
-                  定位冲突节点
+                  定位分歧节点
                 </button>
                 <div class="relationship-opinions">
                   {conflict.issues.map((issue) => (
@@ -859,17 +896,21 @@ export function App() {
                     </article>
                   ))}
                 </div>
-                {decision && (
-                  <div class="arbitration-decision">
-                    <span>仲裁结论 · {reviewSeverityLabels[decision.priority]}</span>
-                    <strong>{decision.resolution}</strong>
-                    <p>{decision.rationale}</p>
+                {tradeoff && (
+                  <div class="tradeoff-guidance">
+                    <span>核心权衡</span>
+                    <p>{tradeoff.tradeoffSummary}</p>
+                    <span>协调建议</span>
+                    <strong>{tradeoff.coordinatedSuggestion}</strong>
+                    {tradeoff.unresolvedNote && (
+                      <small>保留分歧：{tradeoff.unresolvedNote}</small>
+                    )}
                   </div>
                 )}
               </details>
             );
           })}
-        </section>
+        </details>
       )}
 
       {scanResult && (
@@ -885,10 +926,10 @@ export function App() {
                   <span>自动化规则检测</span>
                   <strong>{ruleCheck.issues.length} 项待修复</strong>
                 </div>
-                <small class="rule-check-scope">
+                <aside class="rule-check-scope">
                   <span>自动检查</span>
                   <b>颜色对比度 · 字号 · 点击区域</b>
-                </small>
+                </aside>
               </summary>
 
               <div class="rule-results-content">
@@ -988,6 +1029,34 @@ export function App() {
             </details>
           )}
         </>
+      )}
+
+      {scanResult && ruleCheck && reviewResponse && (
+        <section class="report-export panel-section" aria-label="导出评估报告">
+          <div class="report-export-copy">
+            <span>报告导出</span>
+            <strong>完整评估结果</strong>
+            <small>
+              包含规则检测结果、专家视角评分与结论、具体问题、节点定位信息、修复建议及总体评价
+            </small>
+          </div>
+          <div class="report-export-actions">
+            <button
+              class="report-export-button"
+              type="button"
+              onClick={() => downloadEvaluationReport("markdown")}
+            >
+              导出 Markdown
+            </button>
+            <button
+              class="report-export-button"
+              type="button"
+              onClick={() => downloadEvaluationReport("json")}
+            >
+              导出 JSON
+            </button>
+          </div>
+        </section>
       )}
 
     </main>

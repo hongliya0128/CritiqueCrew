@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_TEXT_LENGTH,
   MAX_VISIBLE_NODES,
+  isSupportedSelectionRoot,
   scanNodeTree,
 } from "../src/main/scanner";
 
@@ -31,6 +32,10 @@ function fakeNode(
 }
 
 describe("scanNodeTree", () => {
+  it("allows a group to be used as the selected scan root", () => {
+    expect(isSupportedSelectionRoot(fakeNode("group-root", "GROUP"))).toBe(true);
+  });
+
   it("flattens visible nodes and preserves hierarchy", () => {
     const hidden = fakeNode("hidden", "RECTANGLE", [], { visible: false });
     const child = fakeNode("child", "TEXT", [], { fontSize: 14, characters: "Hello" });

@@ -60,13 +60,21 @@ export function contrastRatio(foreground: SolidColorSnapshot, background: SolidC
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-function nearestBackground(node: NodeSnapshot, byId: Map<string, NodeSnapshot>): SolidColorSnapshot | null {
+type BackgroundMatch = {
+  node: NodeSnapshot;
+  color: SolidColorSnapshot;
+};
+
+function nearestBackground(node: NodeSnapshot, byId: Map<string, NodeSnapshot>): BackgroundMatch | null {
   let parentId = node.parentId;
   while (parentId) {
     const parent = byId.get(parentId);
     if (!parent) return null;
     if (parent.fillKind === "complex") return null;
-    if (parent.fillKind === "solid") return parent.fills[0] ?? null;
+    if (parent.fillKind === "solid") {
+      const color = parent.fills[0];
+      return color ? { node: parent, color } : null;
+    }
     parentId = parent.parentId;
   }
   return null;
@@ -187,14 +195,14 @@ export function checkRules(nodes: readonly NodeSnapshot[]): RuleCheckResult {
         if (!foreground || !background) {
           skippedContrastNodes += 1;
         } else {
-          const ratio = contrastRatio(foreground, background);
+          const ratio = contrastRatio(foreground, background.color);
           if (ratio < WCAG_AA_CONTRAST_RATIO) {
             issues.push(
               createIssue(
                 "color-contrast",
                 node,
                 "文本/按钮颜色对比度未达到WCAG AA标准",
-                `${ratio.toFixed(2)}:1`,
+                `与背景节点[${background.node.name}]的颜色对比度为 ${ratio.toFixed(2)}:1`,
                 `不低于 ${WCAG_AA_CONTRAST_RATIO}:1`,
               ),
             );

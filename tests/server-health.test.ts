@@ -39,7 +39,7 @@ describe("POST /api/review", () => {
     expect(response.body.reviews.map((review: { role: string }) => review.role)).toEqual(["visual", "accessibility", "interaction"]);
   });
 
-  it("returns a detected direction conflict, arbitration decision, and composite score", async () => {
+  it("returns a detected direction conflict, coordinated tradeoff, and composite score", async () => {
     const response = await request(createApp(config)).post("/api/review").send({
       scan: {
         scope: "selection",
@@ -53,13 +53,14 @@ describe("POST /api/review", () => {
       rules: { issues: [], skippedContrastNodes: 0 },
     }).expect(200);
 
-    expect(response.body.arbitration.status).toBe("completed");
-    expect(response.body.arbitration.conflicts).toHaveLength(1);
-    expect(response.body.arbitration.conflicts[0].issues.map((item: { direction: string }) => item.direction)).toEqual([
+    expect(response.body.coordination.status).toBe("completed");
+    expect(response.body.coordination.conflicts).toHaveLength(1);
+    expect(response.body.coordination.conflicts[0].issues.map((item: { direction: string }) => item.direction)).toEqual([
       "weaken",
       "strengthen",
     ]);
-    expect(response.body.arbitration.decisions).toHaveLength(1);
+    expect(response.body.coordination.tradeoffs).toHaveLength(1);
+    expect(response.body.coordination.overallSummary).not.toBe("");
     expect(response.body.compositeScore).toMatchObject({ score: 79, incomplete: false });
     expect(response.body.incomplete).toBe(false);
   });
