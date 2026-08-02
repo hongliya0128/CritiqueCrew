@@ -81,6 +81,7 @@ describe("rule engine", () => {
     ]);
     expect(result.issues.map((issue) => issue.nodeId)).toEqual(["caption", "caption", "save"]);
     expect(result.issues[0].expected).toContain(`${MIN_BODY_FONT_SIZE}px`);
+    expect(result.issues[1].actual).toBe("与背景节点[Card]的颜色对比度为 3.98:1");
     expect(result.issues[2].expected).toContain(`${MIN_TARGET_SIZE}px`);
   });
 
