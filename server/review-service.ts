@@ -6,6 +6,7 @@ import {
   REVIEW_DIRECTIONS,
   REVIEWER_ROLES,
   type AgentReview,
+  type ReviewDirection,
   type ReviewRequest,
   type ReviewResponse,
   type ReviewerRole,
@@ -46,6 +47,59 @@ const modelReviewSchema = z.object({
   summary: z.string().min(1).max(320),
   issues: z.array(issueSchema).max(20),
 });
+
+const weakenProblemPatterns = [
+  /视觉权重(?:过高|太高|过重)/,
+  /(?:过于|太)(?:突出|醒目|显眼)/,
+  /(?:干扰|抢占).{0,12}(?:主要|核心|主)任务/,
+];
+const strengthenProblemPatterns = [
+  /视觉权重(?:过低|太低|不足)/,
+  /(?:不够|不够明显|缺少)(?:突出|醒目|显眼|强调)/,
+  /(?:难以发现|容易被忽略|不易发现|不明显)/,
+];
+const weakenActionPatterns = [
+  /弱化/,
+  /降低.{0,10}(?:视觉)?权重/,
+  /(?:减弱|淡化).{0,10}(?:强调|显著|样式|按钮)?/,
+  /改为.{0,8}(?:次要|次级)/,
+];
+const strengthenActionPatterns = [
+  /强化/,
+  /(?:提高|提升|增加).{0,10}(?:视觉)?权重/,
+  /(?:增强|加强).{0,10}(?:强调|显著|样式|按钮)?/,
+  /(?:更加|更)(?:突出|醒目|显眼)/,
+];
+
+function matchDirectionalIntent(
+  text: string,
+  weakenPatterns: readonly RegExp[],
+  strengthenPatterns: readonly RegExp[],
+): Extract<ReviewDirection, "strengthen" | "weaken"> | null {
+  const requestsWeakening = weakenPatterns.some((pattern) => pattern.test(text));
+  const requestsStrengthening = strengthenPatterns.some((pattern) => pattern.test(text));
+  if (requestsWeakening === requestsStrengthening) return null;
+  return requestsWeakening ? "weaken" : "strengthen";
+}
+
+export function normalizeReviewDirection(issue: {
+  direction: ReviewDirection;
+  title: string;
+  suggestion: string;
+}): ReviewDirection {
+  if (issue.direction !== "strengthen" && issue.direction !== "weaken") return issue.direction;
+  const titleIntent = matchDirectionalIntent(
+    issue.title,
+    weakenProblemPatterns,
+    strengthenProblemPatterns,
+  );
+  const suggestionIntent = matchDirectionalIntent(
+    issue.suggestion,
+    weakenActionPatterns,
+    strengthenActionPatterns,
+  );
+  return titleIntent ?? suggestionIntent ?? issue.direction;
+}
 
 type RoleDesign = {
   label: string;
@@ -441,6 +495,7 @@ export function buildReviewMessages(role: ReviewerRole, request: ReviewRequest):
 }
 不要输出 Markdown，不要虚构节点 ID，不要重复同类问题，也不要编造标准、出处或依据编号。
 aspect 表示问题实际涉及的设计属性；direction 表示建议对该属性采取的动作。无法归类时使用 other 或 unspecified，不得为了制造冲突而强行选择方向。
+severity 只表示问题的紧急程度，direction 只表示建议的修改动作，两者不得混淆。要求降低、弱化或淡化当前节点时必须使用 weaken；要求提高、强化或突出当前节点时必须使用 strengthen。输出前必须检查 direction 与 title、suggestion 的含义一致。
 每个问题必须给出可从输入中核对的 evidence。basisIds 是相关参考而非唯一评审来源：只有来源内容能够直接支持该问题时才引用；不得为了让问题显得权威而强行匹配来源，没有直接对应来源时返回空数组。
 文字必须短而明确：先说结论，删除背景铺垫、重复解释和泛泛建议；evidence、explanation、suggestion 均不得超过两句话。
 问题标题必须使用“具体对象 + 具体问题”的直白表达，不写比喻、感受或只有设计师才懂的抽象判断。不得使用“缺乏呼吸感”“视觉节奏失衡”“层次感不足”“视觉噪音”等笼统词语；应分别改写为“间距太小或太大”“排列或间距不一致”“主次区分不明显”“干扰注意力的元素过多”等可观察的问题。例如不要写“按钮缺乏呼吸感”，要写“按钮与上方提示区域距离太近”。
@@ -500,7 +555,7 @@ function parseModelReview(role: ReviewerRole, content: string, request: ReviewRe
         severity: issue.severity,
         criterion: issue.criterion,
         aspect: issue.aspect,
-        direction: issue.direction,
+        direction: normalizeReviewDirection(issue),
         title: issue.title
           .replace(/(?:缺乏|缺少)(?:足够的?)?呼吸感|呼吸感不足/g, "间距太小")
           .replace(/视觉节奏(?:失衡|断裂)/g, "排列或间距不一致")

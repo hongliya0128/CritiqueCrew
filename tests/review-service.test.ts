@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildReviewMessages, ROLE_DESIGNS, ReviewService } from "../server/review-service";
+import {
+  buildReviewMessages,
+  normalizeReviewDirection,
+  ROLE_DESIGNS,
+  ReviewService,
+} from "../server/review-service";
 import type { BailianClient, CompletionRequest, CompletionResult } from "../server/bailian-client";
 import type { ServerConfig } from "../server/config";
 import type { ReviewRequest } from "../src/shared/review";
@@ -21,6 +26,29 @@ const reviewRequest: ReviewRequest = {
 };
 
 describe("ReviewService", () => {
+  it("keeps modification direction consistent with the visible conclusion", () => {
+    expect(normalizeReviewDirection({
+      direction: "strengthen",
+      title: "取消预约按钮视觉权重过高干扰主要任务",
+      suggestion: "弱化取消预约按钮样式，让主操作更容易识别。",
+    })).toBe("weaken");
+    expect(normalizeReviewDirection({
+      direction: "weaken",
+      title: "取消预约按钮视觉权重过高",
+      suggestion: "降低该按钮的视觉权重。",
+    })).toBe("weaken");
+    expect(normalizeReviewDirection({
+      direction: "weaken",
+      title: "主操作按钮不明显，容易被忽略",
+      suggestion: "强化主操作按钮，让它更醒目。",
+    })).toBe("strengthen");
+    expect(normalizeReviewDirection({
+      direction: "unspecified",
+      title: "按钮关系需要进一步确认",
+      suggestion: "结合真实交互继续验证。",
+    })).toBe("unspecified");
+  });
+
   it("returns three independent role reviews in Mock mode", async () => {
     const response = await new ReviewService(config).review(reviewRequest);
 
@@ -34,6 +62,75 @@ describe("ReviewService", () => {
     expect(response.coordination.tradeoffs).toHaveLength(1);
     expect(response.coordination.overallSummary).not.toBe("");
     expect(response.compositeScore.score).toBe(73);
+  });
+
+  it("starts the three expert requests concurrently before coordination", async () => {
+    let activeRoleCalls = 0;
+    let maximumActiveRoleCalls = 0;
+    let releaseRoleCalls: (() => void) | undefined;
+    const allRolesStarted = new Promise<void>((resolve) => {
+      releaseRoleCalls = resolve;
+    });
+    const fakeClient = {
+      async complete(request: CompletionRequest): Promise<CompletionResult> {
+        const prompt = JSON.stringify(request.messages);
+        if (prompt.includes("评审协调者")) {
+          return {
+            id: "coordination-after-concurrent-reviews",
+            model: "test-model",
+            content: JSON.stringify({
+              perspectives: [
+                { role: "visual", summary: "页面结构清楚，视觉层级能够支持主要内容识别。" },
+                { role: "accessibility", summary: "内容关系可以理解，主要说明能够帮助用户获取信息。" },
+                { role: "interaction", summary: "任务入口可以识别，基础操作路径较为连贯。" },
+              ],
+              overallSummary: "综合来看，页面已经具备清楚的基础结构和任务框架，后续可继续完善局部细节。",
+              tradeoffs: [],
+            }),
+            latencyMs: 1,
+            mock: false,
+            usage: { promptTokens: null, completionTokens: null, totalTokens: null },
+          };
+        }
+
+        activeRoleCalls += 1;
+        maximumActiveRoleCalls = Math.max(maximumActiveRoleCalls, activeRoleCalls);
+        if (activeRoleCalls === 3) releaseRoleCalls?.();
+        await Promise.race([
+          allRolesStarted,
+          new Promise<void>((resolve) => setTimeout(resolve, 100)),
+        ]);
+        activeRoleCalls -= 1;
+
+        const dimensions = prompt.includes("信息层级")
+          ? ["信息层级", "布局留白", "一致性", "视觉节奏"]
+          : prompt.includes("说明与纠错")
+            ? ["可理解性", "信息关系", "说明与纠错", "可预期性", "包容性"]
+            : ["操作路径合理性", "反馈明确性", "误操作风险"];
+        return {
+          id: `role-${dimensions[0]}`,
+          model: "test-model",
+          content: JSON.stringify({
+            score: 80,
+            dimensions: dimensions.map((label) => ({ label, score: 80, observation: "基础表现稳定。" })),
+            summary: "该视角的基础表现稳定。",
+            issues: [],
+          }),
+          latencyMs: 1,
+          mock: false,
+          usage: { promptTokens: null, completionTokens: null, totalTokens: null },
+        };
+      },
+    } as BailianClient;
+
+    const response = await new ReviewService(
+      { ...config, mockMode: false, apiKey: "test-key" },
+      fakeClient,
+    ).review(reviewRequest);
+
+    expect(maximumActiveRoleCalls).toBe(3);
+    expect(response.reviews.every((review) => review.status === "completed")).toBe(true);
+    expect(response.coordination.status).toBe("completed");
   });
 
   it("builds genuinely distinct role prompts and only gives detailed rule signals to accessibility", () => {

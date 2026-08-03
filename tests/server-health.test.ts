@@ -28,6 +28,24 @@ describe("GET /health", () => {
 });
 
 describe("POST /api/review", () => {
+  it("returns a readable JSON error for an invalid request", async () => {
+    const response = await request(createApp(config)).post("/api/review").send({ scan: {} }).expect(400);
+
+    expect(response.type).toBe("application/json");
+    expect(response.body).toEqual({ error: "Invalid review request." });
+  });
+
+  it("uses the same JSON error format when the request body cannot be parsed", async () => {
+    const response = await request(createApp(config))
+      .post("/api/review")
+      .set("Content-Type", "application/json")
+      .send('{"scan":')
+      .expect(400);
+
+    expect(response.type).toBe("application/json");
+    expect(response.body).toEqual({ error: "评审请求格式无效，请重新扫描后再试。" });
+  });
+
   it("returns the three Mock role reviews", async () => {
     const response = await request(createApp(config)).post("/api/review").send({
       scan: { scope: "selection", rootId: "root", rootName: "Root", rootType: "FRAME", nodeCount: 0, truncated: false, nodes: [] },
