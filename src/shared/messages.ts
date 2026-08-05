@@ -90,7 +90,6 @@ export type PluginMessage =
   | { type: "CLEAR_ANNOTATIONS" }
   | { type: "CREATE_REVIEW_ANNOTATIONS"; issues: ReviewAnnotationIssue[] }
   | { type: "CLEAR_REVIEW_ANNOTATIONS"; silent?: boolean }
-  | { type: "REPAIR_SELECTED_FRAME_HIERARCHY" }
   | { type: "CLOSE_PLUGIN" };
 
 export type UIMessage =
@@ -103,5 +102,4 @@ export type UIMessage =
   | { type: "ANNOTATIONS_CLEARED"; count: number }
   | { type: "REVIEW_ANNOTATIONS_CREATED"; count: number; nodeIds: string[] }
   | { type: "REVIEW_ANNOTATIONS_CLEARED"; count: number }
-  | { type: "HIERARCHY_REPAIRED"; movedCount: number }
   | { type: "PLUGIN_ERROR"; message: string };

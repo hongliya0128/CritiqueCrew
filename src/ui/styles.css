@@ -40,14 +40,6 @@ h1 { margin: 0; font-size: 22px; }
 .scan-launch-copy span { color: var(--section-accent-color); font-size: var(--card-kicker-size); font-weight: 700; }
 .scan-launch-copy strong { margin-top: 3px; overflow: hidden; font-size: var(--card-title-size); line-height: var(--card-title-line-height); text-overflow: ellipsis; white-space: nowrap; }
 .scan-primary { display: block; width: min(68%, 270px); min-height: 33px; margin: 7px auto 0; font-size: var(--primary-action-font-size); }
-.optional-tools { margin: 0; color: #797f8c; font-size: var(--card-meta-size); text-align: right; }
-.optional-tools > summary { display: inline-block; padding: 3px 7px; cursor: pointer; list-style: none; }
-.optional-tools > summary::-webkit-details-marker { display: none; }
-.optional-tools > summary::before { content: "＋"; margin-right: 4px; }
-.optional-tools[open] > summary::before { content: "−"; }
-.optional-tools > div { position: absolute; top: 22px; right: 0; z-index: 5; width: 230px; padding: 10px; border: 1px solid #e2e4eb; border-radius: 9px; background: #fff; box-shadow: 0 8px 20px rgba(36, 40, 51, .12); text-align: left; }
-.optional-tools p { margin: 0 0 8px; color: #797f8c; font-size: 9px; line-height: 1.45; }
-.optional-tools .hierarchy-button { width: 100%; min-height: 30px; color: #5f6470; background: #fbfbfd; font-size: 9px; text-align: center; }
 .proxy-card { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; padding: 12px 14px; border: 1px solid #e2e4eb; border-radius: 12px; background: #fff; }
 .proxy-card > i { width: 9px; height: 9px; flex: none; margin-top: 3px; border-radius: 50%; background: #a5a9b2; box-shadow: 0 0 0 3px rgba(165, 169, 178, .13); }
 .proxy-card.is-online > i { background: #20a464; box-shadow: 0 0 0 3px rgba(32, 164, 100, .13); }
@@ -314,7 +306,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   background: var(--figma-color-bg, #f7f7fb);
 }
 
-.connection-pill, .scan-launch, .panel-section, .optional-tools > div,
+.connection-pill, .scan-launch, .panel-section,
 .proxy-card, .selection-card, .status-card, .scan-card, .agent-review, .rule-results {
   border-color: var(--figma-color-border, #e2e4eb);
   background: var(--figma-color-bg, #fff);
@@ -340,7 +332,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   border-color: var(--figma-color-border, #eef0f4);
 }
 
-.annotation-secondary, .rule-filter, .secondary, .hierarchy-button {
+.annotation-secondary, .rule-filter, .secondary {
   color: var(--figma-color-text, #242833);
   border-color: var(--figma-color-border, #d9dce5);
   background: var(--figma-color-bg-secondary, #fff);

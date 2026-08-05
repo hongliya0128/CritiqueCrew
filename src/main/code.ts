@@ -8,85 +8,6 @@ declare function btoa(value: string): string;
 
 figma.showUI(__html__, { width: 420, height: 560, themeColors: true });
 
-function canContainChildren(node: SceneNode): node is FrameNode | ComponentNode | SectionNode {
-  return node.type === "FRAME" || node.type === "COMPONENT" || node.type === "SECTION";
-}
-
-function containsBounds(outer: Rect, inner: Rect): boolean {
-  const tolerance = 0.5;
-  return (
-    inner.x >= outer.x - tolerance &&
-    inner.y >= outer.y - tolerance &&
-    inner.x + inner.width <= outer.x + outer.width + tolerance &&
-    inner.y + inner.height <= outer.y + outer.height + tolerance
-  );
-}
-
-function reparentPreservingPosition(
-  node: SceneNode,
-  parent: FrameNode | ComponentNode | SectionNode,
-): boolean {
-  if (node.parent === parent) return false;
-  const nodeBounds = node.absoluteBoundingBox;
-  const parentBounds = parent.absoluteBoundingBox;
-  if (!nodeBounds || !parentBounds) return false;
-
-  parent.appendChild(node);
-  node.x = nodeBounds.x - parentBounds.x;
-  node.y = nodeBounds.y - parentBounds.y;
-  return true;
-}
-
-function repairSelectedFrameHierarchy(): number {
-  const selection = figma.currentPage.selection;
-  if (selection.length !== 1 || selection[0].type !== "FRAME") {
-    throw new Error("请先在画布中选择一个需要整理的 Frame。");
-  }
-
-  let movedCount = 0;
-  const roots = [selection[0]];
-
-  for (const root of roots) {
-    const siblings = [...root.children];
-    const assignments = siblings
-      .map((node) => {
-        const nodeBounds = node.absoluteBoundingBox;
-        if (!nodeBounds) return null;
-
-        const parent = siblings
-          .filter(canContainChildren)
-          .filter((candidate) => candidate !== node)
-          .filter((candidate) => {
-            const candidateBounds = candidate.absoluteBoundingBox;
-            if (!candidateBounds || !containsBounds(candidateBounds, nodeBounds)) return false;
-            return candidateBounds.width * candidateBounds.height >
-              nodeBounds.width * nodeBounds.height + 0.5;
-          })
-          .sort((left, right) => {
-            const leftBounds = left.absoluteBoundingBox!;
-            const rightBounds = right.absoluteBoundingBox!;
-            return (
-              leftBounds.width * leftBounds.height -
-              rightBounds.width * rightBounds.height
-            );
-          })[0];
-
-        return parent ? { node, parent } : null;
-      })
-      .filter(
-        (assignment): assignment is { node: SceneNode; parent: FrameNode | ComponentNode | SectionNode } =>
-          assignment !== null,
-      );
-
-    for (const { node, parent } of assignments) {
-      if (reparentPreservingPosition(node, parent)) movedCount += 1;
-    }
-
-  }
-
-  return movedCount;
-}
-
 function getSelectionSummary(): SelectionSummary {
   const selection = figma.currentPage.selection;
   return {
@@ -377,22 +298,6 @@ figma.ui.onmessage = async (message: PluginMessage) => {
       {
         const count = clearAnnotations("review");
         if (!message.silent) post({ type: "REVIEW_ANNOTATIONS_CLEARED", count });
-      }
-      break;
-    case "REPAIR_SELECTED_FRAME_HIERARCHY":
-      try {
-        const movedCount = repairSelectedFrameHierarchy();
-        figma.notify(
-          movedCount > 0
-            ? `已整理选中 Frame 的层级，共调整 ${movedCount} 个节点。`
-            : "选中 Frame 当前没有需要整理的层级。",
-        );
-        post({ type: "HIERARCHY_REPAIRED", movedCount });
-      } catch (error) {
-        post({
-          type: "PLUGIN_ERROR",
-          message: error instanceof Error ? error.message : "整理选中 Frame 层级失败，请重试。",
-        });
       }
       break;
     case "CLOSE_PLUGIN":

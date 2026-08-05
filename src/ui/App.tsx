@@ -113,6 +113,7 @@ export function App() {
   const annotatedRuleNodeIdsRef = useRef<Set<string>>(new Set());
   const annotatedReviewNodeIdsRef = useRef<Set<string>>(new Set());
   const suppressedReverseLocateNodeIdRef = useRef<string | null>(null);
+  const preserveForwardCardSelectionRef = useRef(false);
 
   const visibleIssues = ruleCheck
     ? ruleCheck.issues.filter((issue) => ruleFilter === "all" || issue.ruleId === ruleFilter)
@@ -279,14 +280,6 @@ export function App() {
         setStatus(message.message);
       }
 
-      if (message.type === "HIERARCHY_REPAIRED") {
-        setStatus(
-          message.movedCount > 0
-            ? `已整理选中 Frame 的层级，共调整 ${message.movedCount} 个节点。`
-            : "选中 Frame 当前没有需要整理的层级。",
-        );
-      }
-
     };
 
     window.addEventListener("message", receive);
@@ -305,6 +298,10 @@ export function App() {
     if (suppressedNodeId) {
       suppressedReverseLocateNodeIdRef.current = null;
       if (suppressedNodeId === canvasSelectedNodeId) {
+        if (preserveForwardCardSelectionRef.current) {
+          preserveForwardCardSelectionRef.current = false;
+          return;
+        }
         setActiveIssueId(null);
         setActiveReviewIssueId(null);
         return;
@@ -385,8 +382,10 @@ export function App() {
   function requestLocate(
     nodeId: string,
     nodeName: string,
+    preserveCardSelection = false,
   ): void {
     suppressedReverseLocateNodeIdRef.current = nodeId;
+    preserveForwardCardSelectionRef.current = preserveCardSelection;
     setStatus(`正在定位节点：${nodeName}...`);
     send({ type: "LOCATE_NODE", nodeId });
   }
@@ -407,7 +406,14 @@ export function App() {
     }
 
     setActiveIssueId(issueId);
-    requestLocate(nodeId, nodeName);
+    setActiveReviewIssueId(null);
+    requestLocate(nodeId, nodeName, true);
+  }
+
+  function focusReviewIssue(issueId: string, nodeId: string, nodeName: string): void {
+    setActiveIssueId(null);
+    setActiveReviewIssueId(issueId);
+    requestLocate(nodeId, nodeName, true);
   }
 
   function createAnnotations(): void {
@@ -475,19 +481,6 @@ export function App() {
         <div class="scan-launch-copy">
           <div class="scan-launch-heading">
             <span>开始评估</span>
-            <details class="optional-tools">
-              <summary>可选工具</summary>
-              <div>
-                <p>当选中 Frame 的内部图层层级混乱时使用；正常扫描与评审无需执行。</p>
-                <button
-                  class="secondary hierarchy-button"
-                  type="button"
-                  onClick={() => send({ type: "REPAIR_SELECTED_FRAME_HIERARCHY" })}
-                >
-                  整理选中 Frame 层级
-                </button>
-              </div>
-            </details>
           </div>
           <strong>
             {selection.canScanSelection
@@ -680,7 +673,7 @@ export function App() {
                                         <>
                                           <span title={issue.nodeName ?? issue.nodeId}>{issue.nodeName ?? "未命名节点"}</span>
                                           <code title={issue.nodeId}>{issue.nodeId}</code>
-                                          <button type="button" onClick={() => requestLocate(issue.nodeId!, issue.nodeName ?? issue.nodeId!)}>定位</button>
+                                          <button type="button" onClick={() => focusReviewIssue(issue.id, issue.nodeId!, issue.nodeName ?? issue.nodeId!)}>定位</button>
                                         </>
                                       ) : (
                                         <>
